@@ -1,0 +1,41 @@
+# AFK2自动化脚本配置文件
+
+# ADB配置
+adb:
+  adb_path: adb  # ADB程序路径，如果在PATH中可以直接使用adb
+  command_timeout: 30  # 命令超时（秒）
+  screenshot_quality: 90  # 截图质量(1-100)
+  auto_connect: true  # 启动时自动连接设备
+  reconnect_attempts: 3  # 重连尝试次数
+
+# 游戏配置
+game:
+  package_name: com.lilith.odyssey.cn  # 剑与远征启程包名
+  activity_name: .MainActivity  # 启动Activity
+  startup_wait_time: 10  # 启动等待时间（秒）
+  operation_delay: 0.5  # 操作延迟（秒）
+  loading_timeout: 30  # 加载超时时间（秒）
+  retry_on_failure: true  # 失败时是否重试
+  max_retry_count: 3  # 最大重试次数
+  
+# 识别配置
+recognition:
+  image_threshold: 0.8  # 图像匹配阈值(0-1)
+  ocr_language: chi_sim  # OCR识别语言
+  ocr_engine: paddleocr  # OCR引擎: tesseract 或 paddleocr
+  template_matching_method: TM_CCOEFF_NORMED  # 模板匹配方法
+  enable_debug_output: false  # 启用调试输出
+  
+# UI配置
+ui:
+  theme: default  # 界面主题
+  language: zh_CN  # 界面语言
+  window_size: [1200, 800]  # 窗口大小 (宽, 高)
+  show_console_log: true  # 显示控制台日志
+  auto_save_config: true  # 自动保存配置
+  confirm_on_exit: true  # 退出时确认
+
+# 应用配置
+log_level: INFO  # 日志级别: DEBUG, INFO, WARNING, ERROR, CRITICAL
+auto_save: true  # 自动保存配置
+config_version: 1.0.0  # 配置版本
