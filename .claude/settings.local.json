@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__spec-workflow-mcp__specs-workflow"
+    ],
+    "deny": []
+  }
+}

@@ -1,0 +1,23 @@
+# 核心依赖
+PyQt6>=6.6.0
+PyQt6-Qt6>=6.6.0
+PyQt6-sip>=13.6.0
+
+# 图像处理和识别
+opencv-python>=4.9.0.80
+Pillow>=10.2.0
+numpy>=1.26.3
+
+# OCR识别
+# pytesseract>=0.3.10  # 已切换到PaddleOCR
+paddlepaddle>=2.5.0
+paddleocr>=2.7.0.3
+
+# 配置管理
+PyYAML>=6.0.1
+
+# 任务调度
+schedule>=1.2.0
+
+# 工具类（可选）
+python-dotenv>=1.0.0

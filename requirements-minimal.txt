@@ -1,0 +1,23 @@
+# 最小化依赖（仅命令行模式）
+# 安装: pip install -r requirements-minimal.txt
+
+# 图像处理
+Pillow>=10.2.0
+opencv-python>=4.9.0.80
+numpy>=1.26.3
+
+# OCR（选择一个）
+pytesseract>=0.3.10
+
+# 配置
+PyYAML>=6.0.1
+
+# 任务调度
+schedule>=1.2.0
+
+# 注意：此配置不包含GUI依赖（PyQt6）
+# 只能使用命令行模式：
+# python run.py --mode test
+# python run.py --mode daily
+# python run.py --mode campaign
+# python run.py --mode scheduler
