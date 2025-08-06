@@ -1,0 +1,38 @@
+adb:
+  adb_path: adb
+  device_id: null
+  wireless_address: null
+  screenshot_quality: 90
+  command_timeout: 30
+  auto_connect: true
+  reconnect_attempts: 3
+game:
+  package_name: com.lilith.odyssey.cn
+  activity_name: .MainActivity
+  startup_wait_time: 10
+  operation_delay: 0.5
+  loading_timeout: 30
+  retry_on_failure: true
+  max_retry_count: 3
+recognition:
+  image_threshold: 0.8
+  ocr_language: chi_sim
+  ocr_engine: paddleocr
+  template_matching_method: TM_CCOEFF_NORMED
+  enable_debug_output: false
+ui:
+  theme: default
+  language: zh_CN
+  window_size:
+  - 1200
+  - 800
+  show_console_log: true
+  auto_save_config: true
+  confirm_on_exit: true
+log_level: INFO
+auto_save: true
+config_version: 1.0.0
+_metadata:
+  version: 1.0.0
+  saved_at: '2025-08-06T23:57:21.406464'
+  saved_by: AFK2AutoScript

@@ -106,21 +106,31 @@ class TaskManager(LoggerMixin):
             任务ID
         """
         with self._lock:
+            # 首先尝试从字符串创建 TaskType
+            from src.models.task import TaskType
+            try:
+                # 尝试从枚举中找到对应的类型
+                task_type_enum = next((t for t in TaskType if t.value == task_type), TaskType.CUSTOM)
+            except:
+                task_type_enum = TaskType.CUSTOM
+            
             # 创建任务
             task = TaskInfo(
                 task_id=str(uuid.uuid4()),
-                name=name,
-                task_type=task_type,
-                params=params or {},
+                task_name=name,
+                task_type=task_type_enum,
                 priority=priority,
-                group=group,
                 status=TaskStatus.PENDING,
-                scheduled_time=scheduled_time,
-                timeout=timeout,
                 max_retries=max_retries,
-                retry_count=0,
                 dependencies=dependencies or []
             )
+            
+            # 设置额外的属性到metadata
+            task.metadata['task_type'] = task_type  # 保留字符串版本用于执行器
+            task.metadata['params'] = params or {}
+            task.metadata['group'] = group
+            task.metadata['scheduled_time'] = scheduled_time
+            task.metadata['timeout'] = timeout
             
             # 存储任务
             self._tasks[task.task_id] = task
@@ -185,7 +195,7 @@ class TaskManager(LoggerMixin):
             tasks = [t for t in tasks if t.status == status]
         
         if group:
-            tasks = [t for t in tasks if t.group == group]
+            tasks = [t for t in tasks if t.metadata.get('group') == group]
         
         return tasks
     
@@ -392,11 +402,11 @@ class TaskManager(LoggerMixin):
         history = {
             'task': task.to_dict() if hasattr(task, 'to_dict') else {
                 'task_id': task.task_id,
-                'name': task.name,
-                'task_type': task.task_type,
+                'task_name': task.task_name,
+                'task_type': task.metadata.get('task_type'),
                 'status': task.status.value,
                 'priority': task.priority.value,
-                'created_time': task.created_time.isoformat() if task.created_time else None
+                'created_time': task.start_time.isoformat() if task.start_time else None
             },
             'result': {
                 'status': result.status.value if result else None,
@@ -442,6 +452,7 @@ class TaskManager(LoggerMixin):
         stats = {
             'total': len(self._tasks),
             'pending': len([t for t in self._tasks.values() if t.status == TaskStatus.PENDING]),
+            'queued': len([t for t in self._tasks.values() if t.status == TaskStatus.QUEUED]),
             'running': len([t for t in self._tasks.values() if t.status == TaskStatus.RUNNING]),
             'completed': len([t for t in self._tasks.values() if t.status == TaskStatus.COMPLETED]),
             'failed': len([t for t in self._tasks.values() if t.status == TaskStatus.FAILED]),

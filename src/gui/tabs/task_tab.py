@@ -208,6 +208,17 @@ class TaskTab(QWidget, LoggerMixin):
         self.clear_btn.clicked.connect(self._clear_completed_tasks)
         control_layout.addWidget(self.clear_btn)
         
+        # 添加执行按钮
+        self.execute_btn = QPushButton("执行选中")
+        self.execute_btn.clicked.connect(self._execute_selected_task)
+        self.execute_btn.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; font-weight: bold; }")
+        control_layout.addWidget(self.execute_btn)
+        
+        self.execute_all_btn = QPushButton("执行全部")
+        self.execute_all_btn.clicked.connect(self._execute_all_pending_tasks)
+        self.execute_all_btn.setStyleSheet("QPushButton { background-color: #2196F3; color: white; font-weight: bold; }")
+        control_layout.addWidget(self.execute_all_btn)
+        
         control_layout.addStretch()
         
         # 任务表格
@@ -252,10 +263,11 @@ class TaskTab(QWidget, LoggerMixin):
             self.task_table.setItem(i, 0, QTableWidgetItem(task.task_id))
             
             # 名称
-            self.task_table.setItem(i, 1, QTableWidgetItem(task.name))
+            self.task_table.setItem(i, 1, QTableWidgetItem(task.task_name))
             
             # 类型
-            self.task_table.setItem(i, 2, QTableWidgetItem(task.task_type))
+            task_type = task.metadata.get('task_type', '') if hasattr(task, 'metadata') else ''
+            self.task_table.setItem(i, 2, QTableWidgetItem(task_type))
             
             # 状态
             status_item = QTableWidgetItem(task.status.value)
@@ -278,7 +290,10 @@ class TaskTab(QWidget, LoggerMixin):
             self.task_table.setItem(i, 4, priority_item)
             
             # 创建时间
-            create_time = task.created_at.strftime("%H:%M:%S")
+            if hasattr(task, 'start_time') and task.start_time:
+                create_time = task.start_time.strftime("%H:%M:%S")
+            else:
+                create_time = "-"
             self.task_table.setItem(i, 5, QTableWidgetItem(create_time))
             
             # 操作按钮（预留）
@@ -288,10 +303,11 @@ class TaskTab(QWidget, LoggerMixin):
         stats = self.task_manager.get_statistics()
         self.stats_label.setText(
             f"统计: 总数:{stats['total']} "
-            f"待执行:{stats['pending']} "
-            f"运行中:{stats['running']} "
-            f"已完成:{stats['completed']} "
-            f"失败:{stats['failed']}"
+            f"待执行:{stats.get('pending', 0)} "
+            f"队列中:{stats.get('queued', 0)} "
+            f"运行中:{stats.get('running', 0)} "
+            f"已完成:{stats.get('completed', 0)} "
+            f"失败:{stats.get('failed', 0)}"
         )
     
     def _load_templates(self):
@@ -308,11 +324,8 @@ class TaskTab(QWidget, LoggerMixin):
             daily = DailyTask(self.task_manager)
             task_id = daily.create()
             
-            # 立即调度执行
-            self.task_scheduler.schedule_task(task_id)
-            
-            QMessageBox.information(self, "成功", "日常任务已开始执行")
-            self.logger.info("Daily tasks started")
+            self.logger.info(f"Daily task created: {task_id}")
+            self._refresh_task_list()
         except Exception as e:
             QMessageBox.critical(self, "错误", f"创建任务失败: {e}")
     
@@ -323,11 +336,8 @@ class TaskTab(QWidget, LoggerMixin):
             campaign = CampaignTask(self.task_manager)
             task_id = campaign.create(max_battles=10)
             
-            # 立即调度执行
-            self.task_scheduler.schedule_task(task_id)
-            
-            QMessageBox.information(self, "成功", "征战任务已开始执行")
-            self.logger.info("Campaign task started")
+            self.logger.info(f"Campaign task created: {task_id}")
+            self._refresh_task_list()
         except Exception as e:
             QMessageBox.critical(self, "错误", f"创建任务失败: {e}")
     
@@ -338,11 +348,8 @@ class TaskTab(QWidget, LoggerMixin):
             collect = CollectRewardTask(self.task_manager)
             task_id = collect.create()
             
-            # 立即调度执行
-            self.task_scheduler.schedule_task(task_id)
-            
-            QMessageBox.information(self, "成功", "收集奖励任务已开始执行")
-            self.logger.info("Collect rewards task started")
+            self.logger.info(f"Collect rewards task created: {task_id}")
+            self._refresh_task_list()
         except Exception as e:
             QMessageBox.critical(self, "错误", f"创建任务失败: {e}")
     
@@ -360,11 +367,8 @@ class TaskTab(QWidget, LoggerMixin):
                 template_name
             )
             
-            # 立即调度执行
-            self.task_scheduler.schedule_task(task_id)
-            
-            QMessageBox.information(self, "成功", f"已从模板创建任务: {template_name}")
             self.logger.info(f"Task created from template: {template_name}")
+            self._refresh_task_list()
         except Exception as e:
             QMessageBox.critical(self, "错误", f"创建任务失败: {e}")
     
@@ -510,9 +514,103 @@ class TaskTab(QWidget, LoggerMixin):
         cancelled_count = 0
         
         for task in tasks:
-            if task.status in [TaskStatus.PENDING, TaskStatus.QUEUED, TaskStatus.RUNNING]:
+            if task.status in [TaskStatus.PENDING, TaskStatus.RUNNING]:
                 if self.task_manager.cancel_task(task.task_id):
                     cancelled_count += 1
         
         if cancelled_count > 0:
             QMessageBox.information(self, "成功", f"已停止 {cancelled_count} 个任务")
+    
+    def _execute_selected_task(self):
+        """执行选中的任务"""
+        task_id = self._get_selected_task_id()
+        if not task_id:
+            QMessageBox.warning(self, "警告", "请选择要执行的任务")
+            return
+        
+        # 获取任务信息
+        task = self.task_manager.get_task(task_id)
+        if not task:
+            QMessageBox.warning(self, "警告", "任务不存在")
+            return
+        
+        # 检查任务状态
+        if task.status != TaskStatus.PENDING:
+            if task.status == TaskStatus.RUNNING:
+                QMessageBox.information(self, "提示", "任务正在执行中")
+            elif task.status == TaskStatus.COMPLETED:
+                QMessageBox.information(self, "提示", "任务已完成")
+            elif task.status == TaskStatus.FAILED:
+                reply = QMessageBox.question(
+                    self,
+                    "确认重试",
+                    "任务执行失败，是否重试？",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                )
+                if reply == QMessageBox.StandardButton.Yes:
+                    self._retry_selected_task()
+            else:
+                QMessageBox.information(self, "提示", f"任务状态为 {task.status.value}，无法执行")
+            return
+        
+        try:
+            # 调度任务执行
+            self.task_scheduler.schedule_task(task_id)
+            QMessageBox.information(self, "成功", f"任务 {task.task_name} 已开始执行")
+            self.logger.info(f"Task scheduled for execution: {task_id} - {task.task_name}")
+            
+            # 刷新任务列表
+            self._refresh_task_list()
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"执行任务失败: {e}")
+            self.logger.error(f"Failed to execute task {task_id}: {e}")
+    
+    def _execute_all_pending_tasks(self):
+        """执行所有待执行的任务"""
+        # 获取所有待执行任务
+        pending_tasks = self.task_manager.list_tasks(status=TaskStatus.PENDING)
+        
+        if not pending_tasks:
+            QMessageBox.information(self, "提示", "没有待执行的任务")
+            return
+        
+        # 确认执行
+        reply = QMessageBox.question(
+            self,
+            "确认执行",
+            f"确定要执行全部 {len(pending_tasks)} 个待执行任务吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        
+        # 按优先级排序任务
+        pending_tasks.sort(key=lambda t: (
+            0 if t.priority == TaskPriority.HIGH else 
+            1 if t.priority == TaskPriority.NORMAL else 2
+        ))
+        
+        executed_count = 0
+        failed_tasks = []
+        
+        for task in pending_tasks:
+            try:
+                self.task_scheduler.schedule_task(task.task_id)
+                executed_count += 1
+                self.logger.info(f"Task scheduled: {task.task_id} - {task.task_name}")
+            except Exception as e:
+                failed_tasks.append(task.task_name)
+                self.logger.error(f"Failed to schedule task {task.task_id}: {e}")
+        
+        # 显示结果
+        if executed_count > 0:
+            message = f"已开始执行 {executed_count} 个任务"
+            if failed_tasks:
+                message += f"\n\n以下任务执行失败:\n" + "\n".join(failed_tasks)
+            QMessageBox.information(self, "执行结果", message)
+        else:
+            QMessageBox.warning(self, "警告", "没有任务被执行")
+        
+        # 刷新任务列表
+        self._refresh_task_list()

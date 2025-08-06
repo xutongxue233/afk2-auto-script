@@ -25,8 +25,7 @@ class ConfigService(LoggerMixin):
     
     # 默认配置文件名
     DEFAULT_CONFIG_NAME = "config.yaml"
-    DEFAULT_BACKUP_DIR = "config_backups"
-    MAX_BACKUP_COUNT = 5
+    DEFAULT_CONFIG_BACKUP_NAME = "config_default.yaml"  # 默认配置备份文件名
     
     # 单例模式
     _instance = None
@@ -63,9 +62,8 @@ class ConfigService(LoggerMixin):
         # 确保目录存在
         self.config_dir.mkdir(parents=True, exist_ok=True)
         
-        # 备份目录
-        self.backup_dir = self.config_dir / self.DEFAULT_BACKUP_DIR
-        self.backup_dir.mkdir(exist_ok=True)
+        # 默认配置备份文件路径
+        self.default_config_file = self.config_dir / self.DEFAULT_CONFIG_BACKUP_NAME
         
         # 配置文件路径
         self.config_file = self.config_dir / self.DEFAULT_CONFIG_NAME
@@ -131,6 +129,10 @@ class ConfigService(LoggerMixin):
             self.logger.info(f"Config file not found, creating default config: {config_file}")
             default_config = AppConfig.get_default()
             self.save_config(default_config, config_file)
+            # 保存一份默认配置备份（只在第一次创建时）
+            if not self.default_config_file.exists():
+                self.save_config(default_config, self.default_config_file, create_backup=False)
+                self.logger.info(f"Default config backup created: {self.default_config_file}")
             return default_config
         
         try:
@@ -209,14 +211,14 @@ class ConfigService(LoggerMixin):
     
     def save_config(self, config: Optional[AppConfig] = None, 
                    config_file: Optional[Path] = None,
-                   create_backup: bool = True) -> None:
+                   create_backup: bool = False) -> None:
         """
         保存配置到文件
         
         Args:
             config: 要保存的配置对象，默认使用当前配置
             config_file: 配置文件路径，默认使用默认路径
-            create_backup: 是否创建备份
+            create_backup: 是否创建备份（已废弃，保留参数兼容性）
         """
         if config is None:
             config = self._config
@@ -231,10 +233,6 @@ class ConfigService(LoggerMixin):
         # 验证配置
         if not self.validate_config(config):
             raise ConfigSaveError(str(config_file), "Config validation failed")
-        
-        # 创建备份
-        if create_backup and config_file.exists():
-            self._create_backup(config_file)
         
         try:
             # 确保目录存在
@@ -327,84 +325,46 @@ class ConfigService(LoggerMixin):
             self.logger.error(f"Unexpected validation error: {e}")
             return False
     
-    def _create_backup(self, config_file: Path) -> None:
+    def _save_default_backup(self) -> None:
         """
-        创建配置文件备份
-        
-        Args:
-            config_file: 要备份的配置文件
+        保存默认配置备份（只在第一次运行时保存）
         """
         try:
-            # 生成备份文件名
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup_name = f"{config_file.stem}_{timestamp}{config_file.suffix}"
-            backup_file = self.backup_dir / backup_name
-            
-            # 复制文件
-            shutil.copy2(config_file, backup_file)
-            self.logger.info(f"Config backup created: {backup_file}")
-            
-            # 清理旧备份
-            self._cleanup_old_backups()
-            
+            if not self.default_config_file.exists():
+                default_config = AppConfig.get_default()
+                self._save_yaml_config(default_config, self.default_config_file)
+                self.logger.info(f"Default config backup created: {self.default_config_file}")
         except Exception as e:
-            self.logger.warning(f"Failed to create backup: {e}")
+            self.logger.warning(f"Failed to save default config backup: {e}")
     
-    def _cleanup_old_backups(self) -> None:
-        """清理旧的备份文件"""
-        try:
-            # 获取所有备份文件
-            backup_files = sorted(
-                self.backup_dir.glob(f"*{self.DEFAULT_CONFIG_NAME.split('.')[0]}*"),
-                key=lambda p: p.stat().st_mtime,
-                reverse=True
-            )
-            
-            # 删除超出数量限制的备份
-            for backup_file in backup_files[self.MAX_BACKUP_COUNT:]:
-                backup_file.unlink()
-                self.logger.debug(f"Deleted old backup: {backup_file}")
-                
-        except Exception as e:
-            self.logger.warning(f"Failed to cleanup old backups: {e}")
-    
-    def restore_from_backup(self, backup_file: Optional[Path] = None) -> AppConfig:
+    def restore_from_default(self) -> AppConfig:
         """
-        从备份恢复配置
-        
-        Args:
-            backup_file: 备份文件路径，默认使用最新备份
+        从默认配置恢复（还原到初始状态）
         
         Returns:
             恢复的配置对象
         """
         try:
-            if backup_file is None:
-                # 获取最新的备份文件
-                backup_files = sorted(
-                    self.backup_dir.glob(f"*{self.DEFAULT_CONFIG_NAME.split('.')[0]}*"),
-                    key=lambda p: p.stat().st_mtime,
-                    reverse=True
-                )
-                
-                if not backup_files:
-                    raise ConfigLoadError("", "No backup files found")
-                
-                backup_file = backup_files[0]
-            
-            self.logger.info(f"Restoring config from backup: {backup_file}")
-            
-            # 加载备份配置
-            config = self.load_config(backup_file)
+            # 如果存在默认配置备份文件，从文件加载
+            if self.default_config_file.exists():
+                self.logger.info(f"Restoring config from default backup: {self.default_config_file}")
+                config = self.load_config(self.default_config_file)
+            else:
+                # 否则使用代码中的默认配置
+                self.logger.info("Using built-in default config")
+                config = AppConfig.get_default()
+                # 保存一份默认配置备份
+                self.save_config(config, self.default_config_file, create_backup=False)
             
             # 保存到主配置文件
             self.save_config(config, create_backup=False)
+            self._config = config
             
             return config
             
         except Exception as e:
-            self.logger.error(f"Failed to restore from backup: {e}")
-            raise ConfigLoadError(str(backup_file), f"Restore failed: {e}")
+            self.logger.error(f"Failed to restore from default: {e}")
+            raise ConfigLoadError(str(self.default_config_file), f"Restore failed: {e}")
     
     def get_config_value(self, key_path: str, default: Any = None) -> Any:
         """
@@ -486,9 +446,7 @@ class ConfigService(LoggerMixin):
             默认配置对象
         """
         self.logger.info("Resetting config to default")
-        default_config = AppConfig.get_default()
-        self.config = default_config
-        return default_config
+        return self.restore_from_default()
     
     def export_config(self, export_file: Path) -> None:
         """

@@ -46,7 +46,6 @@ def setup_components():
     )
     
     ocr_config = OCRConfig(
-        engine=config.recognition.ocr_engine,
         lang=config.recognition.ocr_language
     )
     ocr_engine = OCREngine(ocr_config)
@@ -61,9 +60,8 @@ def setup_components():
     
     # 初始化任务管理器
     task_manager = TaskManager(
-        max_workers=3,  # 默认最大并发任务数
-        save_history=True,
-        history_dir=Path("task_history")
+        max_concurrent_tasks=3,  # 默认最大并发任务数
+        task_history_dir=Path("task_history")
     )
     
     task_executor = TaskExecutor(game_controller=game_controller)

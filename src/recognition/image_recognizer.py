@@ -155,7 +155,8 @@ class ImageRecognizer(LoggerMixin):
                      template: Union[str, Template],
                      threshold: Optional[float] = None,
                      method: Optional[str] = None,
-                     region: Optional[Tuple[int, int, int, int]] = None) -> Optional[MatchResult]:
+                     region: Optional[Tuple[int, int, int, int]] = None,
+                     use_grayscale: bool = True) -> Optional[MatchResult]:
         """
         在截图中查找模板
         
@@ -165,6 +166,7 @@ class ImageRecognizer(LoggerMixin):
             threshold: 匹配阈值（覆盖模板默认值）
             method: 匹配方法（覆盖模板默认值）
             region: 搜索区域 (x, y, width, height)
+            use_grayscale: 是否使用灰度处理
         
         Returns:
             匹配结果，未找到返回None
@@ -189,13 +191,34 @@ class ImageRecognizer(LoggerMixin):
         threshold = threshold or template.threshold
         method = method or template.method
         
-        # 执行模板匹配
-        result = self._match_template(
-            screenshot, 
-            template.image,
-            template.mask,
-            method
-        )
+        # 如果使用灰度处理
+        if use_grayscale:
+            # 转换为灰度图
+            if len(screenshot.shape) == 3:
+                screenshot_gray = cv2.cvtColor(screenshot, cv2.COLOR_BGR2GRAY)
+            else:
+                screenshot_gray = screenshot
+            
+            # 转换模板为灰度图
+            if len(template.image.shape) == 3:
+                template_gray = cv2.cvtColor(template.image, cv2.COLOR_BGR2GRAY)
+            else:
+                template_gray = template.image
+            
+            # 执行灰度模板匹配
+            result = self._match_template_grayscale(
+                screenshot_gray,
+                template_gray,
+                method
+            )
+        else:
+            # 执行彩色模板匹配
+            result = self._match_template(
+                screenshot, 
+                template.image,
+                template.mask,
+                method
+            )
         
         if result and result['confidence'] >= threshold:
             # 计算实际坐标
@@ -549,6 +572,47 @@ class ImageRecognizer(LoggerMixin):
             
         except Exception as e:
             self.logger.error(f"Template matching error: {e}")
+            return None
+    
+    def _match_template_grayscale(self, image: np.ndarray, template: np.ndarray,
+                                 method: str) -> Optional[Dict[str, Any]]:
+        """
+        执行灰度模板匹配
+        
+        Args:
+            image: 搜索图像（灰度）
+            template: 模板图像（灰度）
+            method: 匹配方法
+        
+        Returns:
+            匹配结果字典
+        """
+        try:
+            # 执行灰度匹配
+            result = cv2.matchTemplate(
+                image,
+                template,
+                self.MATCH_METHODS[method]
+            )
+            
+            # 查找最佳匹配
+            min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
+            
+            # 根据方法选择位置和置信度
+            if method in ['TM_SQDIFF', 'TM_SQDIFF_NORMED']:
+                position = min_loc
+                confidence = 1 - min_val if method == 'TM_SQDIFF_NORMED' else 1.0 / (1.0 + min_val)
+            else:
+                position = max_loc
+                confidence = max_val
+            
+            return {
+                'position': position,
+                'confidence': confidence
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Grayscale template matching error: {e}")
             return None
     
     def _pil_to_cv2(self, image: Image.Image) -> np.ndarray:

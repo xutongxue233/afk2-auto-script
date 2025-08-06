@@ -20,8 +20,7 @@ from src.utils.exceptions import (
 def ocr_config():
     """创建OCR配置"""
     return OCRConfig(
-        engine='pytesseract',
-        lang='chi_sim',
+        lang='ch',
         preprocess=True
     )
 
@@ -29,8 +28,9 @@ def ocr_config():
 @pytest.fixture
 def ocr_engine(ocr_config):
     """创建OCR引擎实例"""
-    with patch.object(OCREngine, '_init_engine'):
+    with patch.object(OCREngine, '_init_paddleocr'):
         engine = OCREngine(ocr_config)
+        engine._engine_initialized = True
         return engine
 
 
@@ -51,80 +51,57 @@ def text_image():
 
 
 @pytest.fixture
-def mock_tesseract():
-    """模拟pytesseract"""
-    mock = MagicMock()
-    mock.get_tesseract_version.return_value = "4.1.1"
-    mock.image_to_string.return_value = "Test Text 123"
-    mock.image_to_data.return_value = {
-        'text': ['Test', 'Text', '123'],
-        'conf': [90, 95, 88],
-        'left': [10, 50, 100],
-        'top': [10, 10, 10],
-        'width': [30, 30, 25],
-        'height': [20, 20, 20]
-    }
-    mock.Output.DICT = 'dict'
-    return mock
-
-
-@pytest.fixture
 def mock_paddleocr():
     """模拟PaddleOCR"""
     mock = MagicMock()
-    mock.ocr.return_value = [[
-        [[[10, 10], [40, 10], [40, 30], [10, 30]], ('Test', 0.95)],
-        [[[50, 10], [80, 10], [80, 30], [50, 30]], ('Text', 0.92)],
-        [[[100, 10], [125, 10], [125, 30], [100, 30]], ('123', 0.88)]
-    ]]
+    
+    # 模拟新版本PaddleOCR的返回格式
+    ocr_result = MagicMock()
+    ocr_result.__getitem__ = lambda self, key: {
+        'rec_texts': ['Test', 'Text', '123'],
+        'rec_scores': [0.95, 0.92, 0.88],
+        'rec_polys': [
+            [[10, 10], [40, 10], [40, 30], [10, 30]],
+            [[50, 10], [80, 10], [80, 30], [50, 30]],
+            [[100, 10], [125, 10], [125, 30], [100, 30]]
+        ]
+    }.get(key, [])
+    ocr_result.get = lambda key, default=None: {
+        'rec_texts': ['Test', 'Text', '123'],
+        'rec_scores': [0.95, 0.92, 0.88],
+        'rec_polys': [
+            [[10, 10], [40, 10], [40, 30], [10, 30]],
+            [[50, 10], [80, 10], [80, 30], [50, 30]],
+            [[100, 10], [125, 10], [125, 30], [100, 30]]
+        ]
+    }.get(key, default)
+    ocr_result.__contains__ = lambda self, key: key in ['rec_texts', 'rec_scores', 'rec_polys']
+    
+    # predict方法返回格式
+    mock.predict.return_value = [ocr_result]
+    
+    # ocr方法返回格式（兼容旧版本）
+    mock.ocr.return_value = [ocr_result]
+    
     return mock
 
 
 class TestOCREngine:
     """OCR引擎测试类"""
     
-    def test_init_with_tesseract(self):
-        """测试Tesseract初始化"""
-        config = OCRConfig(engine='pytesseract')
-        
-        with patch('src.recognition.ocr_engine.pytesseract') as mock_pytesseract:
-            mock_pytesseract.get_tesseract_version.return_value = "4.1.1"
-            
-            engine = OCREngine(config)
-            assert engine.config.engine == 'pytesseract'
-            assert engine._tesseract is not None
-    
     def test_init_with_paddleocr(self):
         """测试PaddleOCR初始化"""
-        config = OCRConfig(engine='paddleocr')
+        config = OCRConfig(lang='ch')
         
         with patch('src.recognition.ocr_engine.PaddleOCR') as mock_paddle:
             engine = OCREngine(config)
-            assert engine.config.engine == 'paddleocr'
+            engine._ensure_engine_initialized()
             assert engine._paddleocr is not None
             mock_paddle.assert_called_once()
-    
-    def test_init_invalid_engine(self):
-        """测试无效引擎"""
-        config = OCRConfig(engine='invalid')
-        
-        with pytest.raises(OCREngineNotFoundError):
-            OCREngine(config)
-    
-    def test_recognize_text_tesseract(self, ocr_engine, text_image, mock_tesseract):
-        """测试Tesseract文字识别"""
-        ocr_engine._tesseract = mock_tesseract
-        ocr_engine.config.engine = 'pytesseract'
-        
-        with patch.object(ocr_engine, '_prepare_image', return_value=text_image):
-            text = ocr_engine.recognize_text(text_image)
-            assert text == "Test Text 123"
-            mock_tesseract.image_to_string.assert_called_once()
     
     def test_recognize_text_paddleocr(self, ocr_engine, text_image, mock_paddleocr):
         """测试PaddleOCR文字识别"""
         ocr_engine._paddleocr = mock_paddleocr
-        ocr_engine.config.engine = 'paddleocr'
         
         with patch.object(ocr_engine, '_prepare_image', return_value=text_image):
             text = ocr_engine.recognize_text(text_image)
@@ -132,32 +109,9 @@ class TestOCREngine:
             assert "Text" in text
             assert "123" in text
     
-    def test_recognize_with_details_tesseract(self, ocr_engine, text_image, mock_tesseract):
-        """测试Tesseract详细识别"""
-        ocr_engine._tesseract = mock_tesseract
-        ocr_engine.config.engine = 'pytesseract'
-        
-        mock_tesseract.image_to_data.return_value = {
-            'text': ['Test', 'Text', '123', ''],
-            'conf': [90, 95, 88, -1],
-            'left': [10, 50, 100, 0],
-            'top': [10, 10, 10, 0],
-            'width': [30, 30, 25, 0],
-            'height': [20, 20, 20, 0]
-        }
-        
-        with patch.object(ocr_engine, '_prepare_image', return_value=text_image):
-            results = ocr_engine.recognize_with_details(text_image)
-            
-            assert len(results) == 3
-            assert all(isinstance(r, OCRResult) for r in results)
-            assert results[0].text == 'Test'
-            assert results[0].confidence == 0.9
-    
     def test_recognize_with_details_paddleocr(self, ocr_engine, text_image, mock_paddleocr):
         """测试PaddleOCR详细识别"""
         ocr_engine._paddleocr = mock_paddleocr
-        ocr_engine.config.engine = 'paddleocr'
         
         with patch.object(ocr_engine, '_prepare_image', return_value=text_image):
             results = ocr_engine.recognize_with_details(text_image)
@@ -235,47 +189,26 @@ class TestOCREngine:
         
         processed = ocr_engine._preprocess_image(image)
         assert isinstance(processed, Image.Image)
-        assert processed.mode == 'L' or processed.mode == 'RGB'
+        # 预处理后应该是灰度图
+        assert len(np.array(processed).shape) == 2 or np.array(processed).shape[2] == 1
     
     def test_prepare_image_with_region(self, ocr_engine, text_image):
         """测试图像准备（带区域）"""
         region = (10, 5, 50, 30)
         
         with patch.object(ocr_engine, '_preprocess_image', return_value=text_image) as mock_preprocess:
+            ocr_engine.config.preprocess = False  # 关闭预处理
             prepared = ocr_engine._prepare_image(text_image, region)
             
             # 验证裁剪
             assert prepared.size == (50, 30)
     
-    def test_switch_engine(self, ocr_engine):
-        """测试切换引擎"""
-        ocr_engine.config.engine = 'pytesseract'
-        
-        with patch.object(ocr_engine, '_init_paddleocr'):
-            ocr_engine.switch_engine('paddleocr')
-            assert ocr_engine.config.engine == 'paddleocr'
-    
     def test_set_language(self, ocr_engine):
         """测试设置语言"""
         ocr_engine.set_language('eng')
         assert ocr_engine.config.lang == 'eng'
-        
-        # PaddleOCR需要重新初始化
-        ocr_engine.config.engine = 'paddleocr'
-        with patch.object(ocr_engine, '_init_paddleocr') as mock_init:
-            ocr_engine.set_language('ch')
-            mock_init.assert_called_once()
-    
-    def test_benchmark(self, ocr_engine, text_image):
-        """测试性能基准测试"""
-        with patch.object(ocr_engine, 'switch_engine'):
-            with patch.object(ocr_engine, 'recognize_text', side_effect=['Tesseract Result', 'Paddle Result']):
-                results = ocr_engine.benchmark(text_image)
-                
-                assert 'tesseract' in results
-                assert 'paddleocr' in results
-                assert results['tesseract']['success'] is True
-                assert results['paddleocr']['success'] is True
+        # 应该标记需要重新初始化
+        assert ocr_engine._engine_initialized == False
     
     def test_clean_text(self, ocr_engine):
         """测试文本清理"""
@@ -290,20 +223,54 @@ class TestOCREngine:
     
     def test_error_handling(self, ocr_engine, text_image):
         """测试错误处理"""
-        # Tesseract错误
-        ocr_engine._tesseract = Mock()
-        ocr_engine._tesseract.image_to_string.side_effect = Exception("Tesseract error")
-        ocr_engine.config.engine = 'pytesseract'
-        
-        with patch.object(ocr_engine, '_prepare_image', return_value=text_image):
-            with pytest.raises(OCRRecognitionError):
-                ocr_engine.recognize_text(text_image)
-        
         # PaddleOCR错误
         ocr_engine._paddleocr = Mock()
+        ocr_engine._paddleocr.predict.side_effect = Exception("PaddleOCR error")
         ocr_engine._paddleocr.ocr.side_effect = Exception("PaddleOCR error")
-        ocr_engine.config.engine = 'paddleocr'
         
         with patch.object(ocr_engine, '_prepare_image', return_value=text_image):
             with pytest.raises(OCRRecognitionError):
                 ocr_engine.recognize_text(text_image)
+    
+    def test_is_engine_available(self, ocr_engine):
+        """测试引擎可用性检查"""
+        # 模拟引擎可用
+        with patch.object(ocr_engine, '_ensure_engine_initialized'):
+            assert ocr_engine.is_engine_available() == True
+        
+        # 模拟引擎不可用
+        with patch.object(ocr_engine, '_ensure_engine_initialized', side_effect=Exception("Not available")):
+            assert ocr_engine.is_engine_available() == False
+    
+    def test_get_engine_status(self, ocr_engine):
+        """测试获取引擎状态"""
+        with patch.object(ocr_engine, '_ensure_engine_initialized'):
+            status = ocr_engine.get_engine_status()
+            assert status['engine'] == 'PaddleOCR'
+            assert status['available'] == True
+            assert status['error'] is None
+        
+        # 模拟引擎错误
+        with patch.object(ocr_engine, '_ensure_engine_initialized', side_effect=Exception("Test error")):
+            status = ocr_engine.get_engine_status()
+            assert status['available'] == False
+            assert 'Test error' in status['error']
+    
+    def test_recognize_with_old_format(self, ocr_engine, text_image):
+        """测试兼容旧版本PaddleOCR格式"""
+        # 模拟旧版本格式
+        mock_paddle = MagicMock()
+        mock_paddle.predict.side_effect = AttributeError("No predict method")
+        mock_paddle.ocr.return_value = [[
+            [[[10, 10], [40, 10], [40, 30], [10, 30]], ('Test', 0.95)],
+            [[[50, 10], [80, 10], [80, 30], [50, 30]], ('Text', 0.92)],
+            [[[100, 10], [125, 10], [125, 30], [100, 30]], ('123', 0.88)]
+        ]]
+        
+        ocr_engine._paddleocr = mock_paddle
+        
+        with patch.object(ocr_engine, '_prepare_image', return_value=text_image):
+            text = ocr_engine.recognize_text(text_image)
+            assert "Test" in text
+            assert "Text" in text
+            assert "123" in text

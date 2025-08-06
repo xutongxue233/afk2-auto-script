@@ -13,6 +13,7 @@ import uuid
 class TaskStatus(Enum):
     """任务状态枚举"""
     PENDING = "pending"        # 待执行
+    QUEUED = "queued"         # 已入队
     RUNNING = "running"        # 执行中
     PAUSED = "paused"         # 已暂停
     COMPLETED = "completed"    # 已完成

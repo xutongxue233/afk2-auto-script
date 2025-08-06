@@ -280,32 +280,32 @@ class SettingsTab(QWidget, LoggerMixin):
         
         # ADB设置
         self.adb_path.setText(config.adb.adb_path or "adb")
-        self.connect_timeout.setValue(config.adb.connect_timeout)
+        self.connect_timeout.setValue(config.adb.command_timeout)  # 使用 command_timeout
         self.command_timeout.setValue(config.adb.command_timeout)
-        self.auto_reconnect.setChecked(config.adb.auto_reconnect)
+        self.auto_reconnect.setChecked(config.adb.auto_connect)  # 使用 auto_connect
         
         # 游戏设置
         self.package_name.setText(config.game.package_name)
         self.activity_name.setText(config.game.activity_name or "")
-        self.start_wait_time.setValue(config.game.start_wait_time)
-        self.operation_delay.setValue(config.game.operation_delay)
+        self.start_wait_time.setValue(config.game.startup_wait_time)
+        self.operation_delay.setValue(int(config.game.operation_delay * 1000))  # 转换秒到毫秒
         
         # 识别设置
         self.ocr_engine.setCurrentText(config.recognition.ocr_engine)
-        self.ocr_lang.setText(config.recognition.ocr_lang)
-        self.match_threshold.setValue(int(config.recognition.match_threshold * 100))
-        self.cache_templates.setChecked(config.recognition.cache_templates)
+        self.ocr_lang.setText(config.recognition.ocr_language)
+        self.match_threshold.setValue(int(config.recognition.image_threshold * 100))
+        self.cache_templates.setChecked(False)  # 配置中没有这个字段，默认False
         
         # 任务设置
-        self.max_concurrent_tasks.setValue(config.max_concurrent_tasks)
-        self.max_retries.setValue(config.task.max_retries)
-        self.task_timeout.setValue(config.task.timeout)
-        self.save_task_history.setChecked(config.task.save_history)
+        self.max_concurrent_tasks.setValue(3)  # 默认值，配置中没有
+        self.max_retries.setValue(config.game.max_retry_count)
+        self.task_timeout.setValue(config.game.loading_timeout)
+        self.save_task_history.setChecked(True)  # 默认值，配置中没有
         
         # 日志设置
         self.log_level.setCurrentText(config.log_level)
-        self.log_file.setText(config.log_file or "")
-        self.log_retention_days.setValue(config.log_retention_days)
+        self.log_file.setText("")  # 配置中没有这个字段
+        self.log_retention_days.setValue(7)  # 默认值，配置中没有
     
     def _apply_config(self):
         """应用配置（不保存）"""
@@ -315,35 +315,33 @@ class SettingsTab(QWidget, LoggerMixin):
             
             # ADB设置
             config.adb.adb_path = self.adb_path.text() or None
-            config.adb.connect_timeout = self.connect_timeout.value()
             config.adb.command_timeout = self.command_timeout.value()
-            config.adb.auto_reconnect = self.auto_reconnect.isChecked()
+            config.adb.auto_connect = self.auto_reconnect.isChecked()  # 使用 auto_connect
             
             # 游戏设置
             config.game.package_name = self.package_name.text()
             config.game.activity_name = self.activity_name.text() or None
-            config.game.start_wait_time = self.start_wait_time.value()
-            config.game.operation_delay = self.operation_delay.value()
+            config.game.startup_wait_time = self.start_wait_time.value()
+            config.game.operation_delay = self.operation_delay.value() / 1000.0  # 转换毫秒到秒
             
             # 识别设置
             config.recognition.ocr_engine = self.ocr_engine.currentText()
-            config.recognition.ocr_lang = self.ocr_lang.text()
-            config.recognition.match_threshold = self.match_threshold.value() / 100.0
-            config.recognition.cache_templates = self.cache_templates.isChecked()
+            config.recognition.ocr_language = self.ocr_lang.text()
+            config.recognition.image_threshold = self.match_threshold.value() / 100.0
+            # cache_templates 不在配置中，不保存
             
             # 任务设置
-            config.max_concurrent_tasks = self.max_concurrent_tasks.value()
-            config.task.max_retries = self.max_retries.value()
-            config.task.timeout = self.task_timeout.value()
-            config.task.save_history = self.save_task_history.isChecked()
+            # max_concurrent_tasks 不在配置中
+            config.game.max_retry_count = self.max_retries.value()
+            config.game.loading_timeout = self.task_timeout.value()
+            # save_history 不在配置中
             
             # 日志设置
             config.log_level = self.log_level.currentText()
-            config.log_file = self.log_file.text() or None
-            config.log_retention_days = self.log_retention_days.value()
+            # log_file 和 log_retention_days 不在配置中
             
-            # 通知监听器
-            self.config_service.notify_listeners()
+            # 保存配置会自动触发监听器通知
+            # 不需要手动调用 notify_listeners
             
             QMessageBox.information(self, "成功", "配置已应用")
             self.logger.info("Configuration applied")
@@ -373,15 +371,19 @@ class SettingsTab(QWidget, LoggerMixin):
         reply = QMessageBox.question(
             self,
             "确认重置",
-            "确定要重置为默认配置吗？",
+            "确定要重置为默认配置吗？\n这将恢复到初始安装时的配置状态。",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
         
         if reply == QMessageBox.StandardButton.Yes:
-            # 重新加载默认配置
-            self.config_service.reset_to_default()
-            self._load_config()
-            QMessageBox.information(self, "成功", "已重置为默认配置")
+            try:
+                # 从默认备份恢复配置
+                self.config_service.restore_from_default()
+                self._load_config()
+                QMessageBox.information(self, "成功", "已恢复到默认配置")
+            except Exception as e:
+                self.logger.error(f"重置配置失败: {e}")
+                QMessageBox.critical(self, "错误", f"重置配置失败: {str(e)}")
     
     def _import_config(self):
         """导入配置"""
@@ -412,7 +414,8 @@ class SettingsTab(QWidget, LoggerMixin):
         
         if filename:
             try:
-                self.config_service.save_config(filename)
+                from pathlib import Path
+                self.config_service.export_config(Path(filename))
                 QMessageBox.information(self, "成功", "配置已导出")
                 self.logger.info(f"Config exported to: {filename}")
             except Exception as e:

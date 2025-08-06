@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from src.models.task import TaskInfo, TaskPriority, TaskGroup
 from src.tasks.task_manager import TaskManager
 from src.services.log_service import LoggerMixin
+from src.tasks.daily_idle_reward_task import DailyIdleRewardTask
 
 
 @dataclass
@@ -62,7 +63,7 @@ class DailyTask(LoggerMixin):
                 'include_shop': True
             },
             priority=TaskPriority.HIGH,
-            group=TaskGroup.DAILY,
+            group=None,
             scheduled_time=scheduled_time,
             timeout=1800,  # 30分钟
             max_retries=2
@@ -90,7 +91,7 @@ class DailyTask(LoggerMixin):
             name="收集奖励",
             task_type="collect_rewards",
             priority=TaskPriority.HIGH,
-            group=TaskGroup.DAILY,
+            group=None,
             scheduled_time=scheduled_time
         )
         task_ids.append(reward_task)
@@ -101,7 +102,7 @@ class DailyTask(LoggerMixin):
             task_type="campaign",
             params={'max_battles': 5},
             priority=TaskPriority.NORMAL,
-            group=TaskGroup.DAILY,
+            group=None,
             dependencies=[reward_task]  # 依赖收集奖励完成
         )
         task_ids.append(campaign_task)
@@ -111,7 +112,7 @@ class DailyTask(LoggerMixin):
             name="公会任务",
             task_type="guild_tasks",
             priority=TaskPriority.NORMAL,
-            group=TaskGroup.DAILY
+            group=None
         )
         task_ids.append(guild_task)
         
@@ -120,7 +121,7 @@ class DailyTask(LoggerMixin):
             name="英雄升级",
             task_type="hero_upgrade",
             priority=TaskPriority.LOW,
-            group=TaskGroup.DAILY,
+            group=None,
             dependencies=[campaign_task]  # 征战后升级
         )
         task_ids.append(hero_task)
@@ -168,7 +169,7 @@ class CampaignTask(LoggerMixin):
                 'use_quick_battle': use_quick_battle
             },
             priority=priority,
-            group=TaskGroup.BATTLE,
+            group=None,
             timeout=600,  # 10分钟
             max_retries=2
         )
@@ -211,7 +212,7 @@ class CollectRewardTask(LoggerMixin):
             task_type="collect_rewards",
             params={'reward_types': reward_types},
             priority=priority,
-            group=TaskGroup.DAILY,
+            group=None,
             timeout=300,  # 5分钟
             max_retries=3
         )
@@ -266,7 +267,7 @@ class CustomScriptTask(LoggerMixin):
             task_type="custom_script",
             params=task_params,
             priority=priority,
-            group=TaskGroup.MANUAL,
+            group=None,
             timeout=600,  # 10分钟
             max_retries=1
         )
@@ -301,7 +302,7 @@ class TaskTemplateManager:
                 'include_shop': True
             },
             priority=TaskPriority.HIGH,
-            group=TaskGroup.DAILY,
+            group=None,
             timeout=1800
         ))
         
@@ -317,7 +318,7 @@ class TaskTemplateManager:
                 'include_shop': False
             },
             priority=TaskPriority.HIGH,
-            group=TaskGroup.DAILY,
+            group=None,
             timeout=600
         ))
         
@@ -331,7 +332,7 @@ class TaskTemplateManager:
                 'use_quick_battle': False
             },
             priority=TaskPriority.NORMAL,
-            group=TaskGroup.BATTLE,
+            group=None,
             timeout=600
         ))
         
@@ -345,7 +346,7 @@ class TaskTemplateManager:
                 'use_quick_battle': True
             },
             priority=TaskPriority.NORMAL,
-            group=TaskGroup.BATTLE,
+            group=None,
             timeout=300
         ))
         
@@ -358,8 +359,23 @@ class TaskTemplateManager:
                 'reward_types': ['idle', 'mail', 'quest', 'achievement']
             },
             priority=TaskPriority.HIGH,
-            group=TaskGroup.DAILY,
+            group=None,
             timeout=300
+        ))
+        
+        # 每日挂机奖励模板
+        self.register_template(TaskTemplate(
+            name="daily_idle_reward",
+            task_type="daily_idle_reward",
+            description="领取每日挂机奖励",
+            default_params={
+                'check_idle_mode': True,
+                'use_hourglass': True
+            },
+            priority=TaskPriority.HIGH,
+            group=None,
+            timeout=180,  # 3分钟
+            max_retries=2
         ))
     
     def register_template(self, template: TaskTemplate) -> None:

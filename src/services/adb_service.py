@@ -53,6 +53,21 @@ class ADBService(LoggerMixin):
         if self.config.adb_path and os.path.exists(self.config.adb_path):
             return self.config.adb_path
         
+        # 优先使用项目目录下的adb
+        project_root = Path(__file__).parent.parent.parent  # src/services/adb_service.py -> 项目根目录
+        if os.name == 'nt':
+            # Windows系统
+            project_adb = project_root / "adb" / "adb.exe"
+            if project_adb.exists():
+                self.logger.info(f"Using project ADB: {project_adb}")
+                return str(project_adb)
+        else:
+            # Linux/Mac系统
+            project_adb = project_root / "adb" / "adb"
+            if project_adb.exists():
+                self.logger.info(f"Using project ADB: {project_adb}")
+                return str(project_adb)
+        
         # 尝试直接使用adb命令
         try:
             result = subprocess.run(
@@ -243,7 +258,7 @@ class ADBService(LoggerMixin):
                 
                 # 设置状态
                 if status == 'device':
-                    device.status = DeviceStatus.CONNECTED
+                    device.status = DeviceStatus.ONLINE
                 elif status == 'offline':
                     device.status = DeviceStatus.OFFLINE
                 elif status == 'unauthorized':
@@ -251,11 +266,15 @@ class ADBService(LoggerMixin):
                 else:
                     device.status = DeviceStatus.UNKNOWN
                 
+                self.logger.debug(f"Device {device_id} status: {status} -> {device.status}")
+                
                 # 判断连接类型
                 if ':' in device_id:
                     device.connection_type = ConnectionType.WIFI
                 else:
                     device.connection_type = ConnectionType.USB
+                
+                self.logger.debug(f"Device {device_id} connection type: {device.connection_type}")
                 
                 # 解析额外信息
                 for part in parts[2:]:
@@ -265,7 +284,7 @@ class ADBService(LoggerMixin):
                         device.device_name = part.split(':')[1]
                 
                 # 如果设备已连接，获取更多信息
-                if device.status == DeviceStatus.CONNECTED:
+                if device.status == DeviceStatus.ONLINE:
                     self._get_device_details(device)
                 
                 devices.append(device)
@@ -279,54 +298,27 @@ class ADBService(LoggerMixin):
     
     def _get_device_details(self, device: Device) -> None:
         """
-        获取设备详细信息
+        获取设备详细信息（简化版，只获取基本信息）
         
         Args:
             device: 设备对象
         """
         try:
-            # 临时设置当前设备
-            old_device = self.current_device
-            self.current_device = device
-            
-            # 获取Android版本
-            version = self.execute_command("shell getprop ro.build.version.release")
-            if version:
-                device.android_version = version
-            
-            # 获取SDK版本
-            sdk = self.execute_command("shell getprop ro.build.version.sdk")
-            if sdk:
-                device.sdk_version = int(sdk)
-            
-            # 获取制造商
-            manufacturer = self.execute_command("shell getprop ro.product.manufacturer")
-            if manufacturer:
-                device.manufacturer = manufacturer
-            
             # 获取屏幕分辨率
-            size = self.execute_command("shell wm size")
-            if size:
-                match = re.search(r'(\d+)x(\d+)', size)
+            cmd = f"-s {device.device_id} shell wm size"
+            output = self.execute_command(cmd, use_device=False, timeout=2)
+            if output:
+                # 解析输出，格式通常是 "Physical size: 1080x1920"
+                import re
+                match = re.search(r'(\d+)x(\d+)', output)
                 if match:
                     width = int(match.group(1))
                     height = int(match.group(2))
-                    device.screen_resolution = (width, height)
-            
-            # 获取电池电量
-            battery = self.execute_command("shell dumpsys battery")
-            if battery:
-                for line in battery.split('\n'):
-                    if 'level:' in line:
-                        level = line.split(':')[1].strip()
-                        device.battery_level = int(level)
-                        break
-            
-            # 恢复原设备
-            self.current_device = old_device
-            
+                    device.set_resolution(width, height)
+                    self.logger.debug(f"Device {device.device_id} resolution: {width}x{height}")
         except Exception as e:
-            self.logger.warning(f"Failed to get device details: {e}")
+            self.logger.debug(f"Failed to get device details: {e}")
+            # 不影响主流程，忽略错误
     
     def connect_device(self, device_id: Optional[str] = None) -> bool:
         """
@@ -352,7 +344,7 @@ class ADBService(LoggerMixin):
                 devices = self.get_devices()
                 for device in devices:
                     if device.device_id == device_id:
-                        if device.status == DeviceStatus.CONNECTED:
+                        if device.status in (DeviceStatus.CONNECTED, DeviceStatus.ONLINE):
                             self.current_device = device
                             self.logger.info(f"Connected to device: {device}")
                             return True
@@ -369,7 +361,7 @@ class ADBService(LoggerMixin):
                 # 连接第一个可用设备
                 devices = self.get_devices()
                 for device in devices:
-                    if device.status == DeviceStatus.CONNECTED:
+                    if device.status in (DeviceStatus.CONNECTED, DeviceStatus.ONLINE):
                         self.current_device = device
                         self.logger.info(f"Connected to first available device: {device}")
                         return True
@@ -382,6 +374,30 @@ class ADBService(LoggerMixin):
         except Exception as e:
             self.logger.error(f"Failed to connect device: {e}")
             raise
+    
+    def connect_wifi_device(self, address: str) -> bool:
+        """
+        连接WiFi设备
+        
+        Args:
+            address: 设备地址 (IP:端口)
+        
+        Returns:
+            是否连接成功
+        """
+        try:
+            self.logger.info(f"Connecting to WiFi device: {address}")
+            output = self.execute_command(f"connect {address}", use_device=False)
+            
+            if "connected" in output.lower() or "already" in output.lower():
+                self.logger.info(f"WiFi device connected: {address}")
+                return True
+            else:
+                self.logger.error(f"Failed to connect WiFi device: {output}")
+                return False
+        except Exception as e:
+            self.logger.error(f"Failed to connect WiFi device: {e}")
+            return False
     
     def disconnect_device(self) -> None:
         """断开设备连接"""
@@ -476,19 +492,66 @@ class ADBService(LoggerMixin):
         if not self.current_device:
             return False
         
+        # 方法1：检查运行中的服务
         try:
-            # 获取当前运行的活动
-            cmd = "shell dumpsys activity activities | grep mResumedActivity"
-            output = self.execute_command(cmd)
-            return package_name in output
-        except Exception:
-            # 备用方法：检查进程
+            cmd = f"shell dumpsys activity services {package_name}"
+            output = self.execute_command(cmd, timeout=5)
+            if output and "ServiceRecord" in output:
+                self.logger.debug(f"Found services for {package_name}")
+                return True
+        except Exception as e:
+            self.logger.debug(f"Failed to check services: {e}")
+        
+        # 方法2：检查正在运行的活动
+        try:
+            cmd = "shell dumpsys activity activities"
+            output = self.execute_command(cmd, timeout=5)
+            if output and package_name in output:
+                # 检查是否有活跃的活动
+                lines = output.split('\n')
+                for line in lines:
+                    if package_name in line and ("mResumedActivity" in line or "RESUMED" in line):
+                        self.logger.debug(f"Found resumed activity for {package_name}")
+                        return True
+        except Exception as e:
+            self.logger.debug(f"Failed to check activities: {e}")
+        
+        # 方法3：检查进程列表（传统方法）
+        try:
+            cmd = "shell ps -A"
+            output = self.execute_command(cmd, timeout=5)
+            for line in output.split('\n'):
+                if package_name in line:
+                    self.logger.debug(f"Found process for {package_name}")
+                    return True
+        except Exception as e:
+            # 如果 -A 参数不支持，尝试不带参数
             try:
-                cmd = f"shell ps | grep {package_name}"
-                output = self.execute_command(cmd)
-                return bool(output)
-            except Exception:
-                return False
+                cmd = "shell ps"
+                output = self.execute_command(cmd, timeout=5)
+                for line in output.split('\n'):
+                    if package_name in line:
+                        self.logger.debug(f"Found process for {package_name} (fallback)")
+                        return True
+            except Exception as e2:
+                self.logger.debug(f"Failed to check process: {e2}")
+        
+        # 方法4：检查应用窗口
+        try:
+            cmd = "shell dumpsys window windows"
+            output = self.execute_command(cmd, timeout=3)
+            if output and package_name in output:
+                # 检查是否有可见窗口
+                lines = output.split('\n')[:50]  # 只检查前50行
+                for line in lines:
+                    if package_name in line and ("mHasSurface=true" in line or "VISIBLE" in line):
+                        self.logger.debug(f"Found visible window for {package_name}")
+                        return True
+        except Exception as e:
+            self.logger.debug(f"Failed to check windows: {e}")
+        
+        self.logger.debug(f"App {package_name} not found in any checks")
+        return False
     
     def tap(self, x: int, y: int) -> None:
         """
@@ -607,6 +670,17 @@ class ADBService(LoggerMixin):
             
             # 根据配置调整质量
             if self.config.screenshot_quality < 100:
+                # 如果是RGBA模式，先转换为RGB
+                if image.mode == 'RGBA':
+                    # 创建白色背景
+                    rgb_image = Image.new('RGB', image.size, (255, 255, 255))
+                    # 粘贴RGBA图像，使用alpha通道作为蒙版
+                    rgb_image.paste(image, mask=image.split()[3] if len(image.split()) > 3 else None)
+                    image = rgb_image
+                elif image.mode not in ['RGB', 'L']:
+                    # 其他模式也转换为RGB
+                    image = image.convert('RGB')
+                    
                 # 转换为JPEG格式以减小大小
                 output = io.BytesIO()
                 image.save(output, format='JPEG', quality=self.config.screenshot_quality)
@@ -631,20 +705,35 @@ class ADBService(LoggerMixin):
             raise DeviceNotFoundError()
         
         try:
-            # 检查屏幕状态
-            cmd = "shell dumpsys power | grep 'mWakefulness'"
+            # 检查屏幕状态（不使用grep）
+            cmd = "shell dumpsys power"
             output = self.execute_command(cmd)
             
+            # 在Python中查找mWakefulness
+            is_asleep = False
+            for line in output.split('\n'):
+                if 'mWakefulness' in line:
+                    if 'Asleep' in line or 'Dozing' in line:
+                        is_asleep = True
+                        break
+            
             # 如果屏幕关闭，先唤醒
-            if 'Asleep' in output or 'Dozing' in output:
+            if is_asleep:
                 self.press_key('KEYCODE_POWER')
                 time.sleep(1)
             
-            # 检查是否有锁屏
-            cmd = "shell dumpsys window | grep mDreamingLockscreen"
+            # 检查是否有锁屏（不使用grep）
+            cmd = "shell dumpsys window"
             output = self.execute_command(cmd)
             
-            if 'mDreamingLockscreen=true' in output:
+            # 在Python中查找mDreamingLockscreen
+            has_lockscreen = False
+            for line in output.split('\n'):
+                if 'mDreamingLockscreen=true' in line:
+                    has_lockscreen = True
+                    break
+            
+            if has_lockscreen:
                 # 尝试滑动解锁
                 width, height = self.current_device.screen_resolution
                 if width > 0 and height > 0:
@@ -675,13 +764,17 @@ class ADBService(LoggerMixin):
             return None
         
         try:
-            cmd = "shell dumpsys activity activities | grep mResumedActivity"
+            # 获取所有活动信息（不使用grep）
+            cmd = "shell dumpsys activity activities"
             output = self.execute_command(cmd)
             
-            # 解析活动名称
-            match = re.search(r'([a-zA-Z0-9_.]+)/([a-zA-Z0-9_.]+)', output)
-            if match:
-                return f"{match.group(1)}/{match.group(2)}"
+            # 在Python中查找mResumedActivity
+            for line in output.split('\n'):
+                if 'mResumedActivity' in line:
+                    # 解析活动名称
+                    match = re.search(r'([a-zA-Z0-9_.]+)/([a-zA-Z0-9_.]+)', line)
+                    if match:
+                        return f"{match.group(1)}/{match.group(2)}"
             
             return None
             
@@ -748,3 +841,114 @@ class ADBService(LoggerMixin):
         except Exception as e:
             self.logger.error(f"Failed to uninstall app: {e}")
             return False
+    
+    def is_connected(self) -> bool:
+        """
+        检查是否有设备连接
+        
+        Returns:
+            是否有设备连接
+        """
+        return self.current_device is not None and self.current_device.status == DeviceStatus.ONLINE
+    
+    def select_device(self, device_id: str) -> bool:
+        """
+        选择设备
+        
+        Args:
+            device_id: 设备ID
+        
+        Returns:
+            是否选择成功
+        """
+        try:
+            devices = self.get_devices()
+            for device in devices:
+                if device.device_id == device_id and device.status == DeviceStatus.ONLINE:
+                    self.current_device = device
+                    self.logger.info(f"Selected device: {device_id}")
+                    return True
+            
+            self.logger.error(f"Device not found or not online: {device_id}")
+            return False
+        except Exception as e:
+            self.logger.error(f"Failed to select device {device_id}: {e}")
+            return False
+    
+    def take_screenshot(self) -> Optional[Image.Image]:
+        """
+        截取屏幕截图
+        
+        Returns:
+            PIL Image对象，失败时返回None
+        """
+        try:
+            return self.screenshot()
+        except Exception as e:
+            self.logger.error(f"Failed to take screenshot: {e}")
+            return None
+    
+    def wake_and_start_game(self, package_name: str = "com.lilithgame.igame.android.cn") -> bool:
+        """
+        唤醒设备并启动游戏
+        
+        Args:
+            package_name: 游戏包名，默认为剑与远征启程
+        
+        Returns:
+            是否成功启动游戏
+        """
+        if not self.current_device:
+            self.logger.error("No device connected")
+            return False
+        
+        try:
+            self.logger.info("Starting wake and launch game process...")
+            
+            # 1. 唤醒设备屏幕
+            self.logger.info("Waking up device...")
+            if not self.unlock_screen():
+                self.logger.warning("Failed to unlock screen, but continuing...")
+            
+            # 2. 等待一下确保屏幕完全唤醒
+            time.sleep(2)
+            
+            # 3. 返回主屏幕
+            self.logger.info("Going to home screen...")
+            self.press_key('KEYCODE_HOME')
+            time.sleep(1)
+            
+            # 4. 检查游戏是否已经在运行
+            if self.is_app_running(package_name):
+                self.logger.info(f"Game {package_name} is already running")
+                # 如果游戏已经在运行，切换到前台
+                current_activity = self.get_current_activity()
+                if current_activity and package_name not in current_activity:
+                    # 游戏在后台，需要切换到前台
+                    self.logger.info("Bringing game to foreground...")
+                    return self.start_app(package_name)
+                return True
+            
+            # 5. 启动游戏
+            self.logger.info(f"Starting game: {package_name}")
+            if self.start_app(package_name):
+                self.logger.info("Game started successfully")
+                # 等待游戏启动
+                time.sleep(5)
+                return True
+            else:
+                self.logger.error("Failed to start game")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"Failed to wake and start game: {e}")
+            return False
+    
+    def get_device_id(self) -> Optional[str]:
+        """
+        获取当前设备ID
+        
+        Returns:
+            设备ID，无设备时返回None
+        """
+        return self.current_device.device_id if self.current_device else None

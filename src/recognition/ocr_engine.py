@@ -1,6 +1,6 @@
 """
 OCR引擎模块
-提供文字识别功能，支持pytesseract和PaddleOCR
+提供文字识别功能，使用PaddleOCR
 """
 
 import re
@@ -33,21 +33,18 @@ class OCRResult:
 @dataclass
 class OCRConfig:
     """
-    OCR配置
+    OCR配置 - 使用PaddleOCR
     """
-    engine: str = 'pytesseract'  # OCR引擎 ('pytesseract' 或 'paddleocr')
-    lang: str = 'chi_sim'  # 识别语言
-    use_angle_cls: bool = True  # 是否使用角度分类（PaddleOCR）
-    use_gpu: bool = False  # 是否使用GPU
+    lang: str = 'ch'  # 识别语言 (PaddleOCR使用'ch'表示中文)
+    use_angle_cls: bool = True  # 是否使用角度分类
     det_db_thresh: float = 0.3  # 文本检测阈值
     rec_thresh: float = 0.5  # 文本识别阈值
-    tesseract_config: str = '--psm 3'  # Tesseract配置
-    preprocess: bool = True  # 是否预处理图像
+    preprocess: bool = False  # 是否预处理图像（默认关闭，避免过度处理）
 
 
 class OCREngine(LoggerMixin):
     """
-    OCR引擎类
+    OCR引擎类 - 基于PaddleOCR
     提供文字识别功能
     """
     
@@ -59,11 +56,10 @@ class OCREngine(LoggerMixin):
             config: OCR配置
         """
         self.config = config or OCRConfig()
-        self._tesseract = None
         self._paddleocr = None
         self._engine_initialized = False
         
-        self.logger.info(f"OCREngine created with engine: {self.config.engine}")
+        self.logger.info(f"OCREngine created with PaddleOCR, lang: {self.config.lang}")
     
     def _ensure_engine_initialized(self) -> None:
         """确保OCR引擎已初始化（延迟初始化）"""
@@ -71,17 +67,11 @@ class OCREngine(LoggerMixin):
             return
         
         try:
-            if self.config.engine == 'pytesseract':
-                self._init_tesseract()
-            elif self.config.engine == 'paddleocr':
-                self._init_paddleocr()
-            else:
-                raise OCREngineNotFoundError(self.config.engine)
-            
+            self._init_paddleocr()
             self._engine_initialized = True
-            self.logger.info(f"OCR引擎初始化完成: {self.config.engine}")
+            self.logger.info("PaddleOCR引擎初始化完成")
         except Exception as e:
-            self.logger.error(f"OCR引擎初始化失败: {e}")
+            self.logger.error(f"PaddleOCR引擎初始化失败: {e}")
             raise
     
     def is_engine_available(self) -> bool:
@@ -105,7 +95,7 @@ class OCREngine(LoggerMixin):
             状态信息字典
         """
         status = {
-            "engine": self.config.engine,
+            "engine": "PaddleOCR",
             "available": False,
             "initialized": self._engine_initialized,
             "error": None
@@ -119,42 +109,29 @@ class OCREngine(LoggerMixin):
         
         return status
     
-    def _init_engine(self) -> None:
-        """初始化OCR引擎（兼容旧代码）"""
-        self._ensure_engine_initialized()
-    
-    def _init_tesseract(self) -> None:
-        """初始化Tesseract引擎"""
-        try:
-            import pytesseract
-            
-            # 检查Tesseract是否可用
-            try:
-                pytesseract.get_tesseract_version()
-                self._tesseract = pytesseract
-                self.logger.info("Tesseract OCR initialized successfully")
-            except pytesseract.TesseractNotFoundError:
-                raise OCREngineNotFoundError("Tesseract not installed or not in PATH")
-                
-        except ImportError:
-            raise OCREngineNotFoundError("pytesseract not installed")
-    
     def _init_paddleocr(self) -> None:
         """初始化PaddleOCR引擎"""
         try:
             from paddleocr import PaddleOCR
             
-            self._paddleocr = PaddleOCR(
-                use_angle_cls=self.config.use_angle_cls,
-                lang=self.config.lang if self.config.lang != 'chi_sim' else 'ch',
-                use_gpu=self.config.use_gpu,
-                det_db_thresh=self.config.det_db_thresh,
-                show_log=False
-            )
-            self.logger.info("PaddleOCR initialized successfully")
+            # PaddleOCR配置，使用最小参数避免兼容性问题
+            try:
+                # 尝试只指定语言参数
+                self._paddleocr = PaddleOCR(lang=self.config.lang)
+                self.logger.info("PaddleOCR initialized successfully")
+                
+            except Exception as e:
+                # 如果失败，尝试完全默认配置
+                self.logger.warning(f"PaddleOCR init with lang failed: {e}, trying default config")
+                try:
+                    self._paddleocr = PaddleOCR()
+                    self.logger.info("PaddleOCR initialized with default config")
+                except Exception as e2:
+                    self.logger.error(f"PaddleOCR init completely failed: {e2}")
+                    raise OCREngineNotFoundError(f"PaddleOCR初始化失败: {e2}. 请运行: pip install paddlepaddle paddleocr")
             
         except ImportError:
-            raise OCREngineNotFoundError("paddleocr not installed")
+            raise OCREngineNotFoundError("PaddleOCR未安装. 请运行: pip install paddlepaddle paddleocr")
     
     @retry_on_recognition_error(max_attempts=3)
     def recognize_text(self, image: Union[Image.Image, np.ndarray, str, Path],
@@ -166,7 +143,7 @@ class OCREngine(LoggerMixin):
         Args:
             image: 输入图像（PIL Image、numpy数组、文件路径）
             region: 识别区域 (x, y, width, height)
-            lang: 识别语言（覆盖默认设置）
+            lang: 识别语言（覆盖默认设置，暂不支持）
         
         Returns:
             识别的文本
@@ -178,15 +155,12 @@ class OCREngine(LoggerMixin):
         image = self._prepare_image(image, region)
         
         # 执行识别
-        if self.config.engine == 'pytesseract':
-            text = self._recognize_with_tesseract(image, lang)
-        else:
-            text = self._recognize_with_paddleocr(image)
+        text = self._recognize_with_paddleocr(image)
         
         # 清理文本
         text = self._clean_text(text)
         
-        self.logger.debug(f"Recognized text: {text[:50]}...")
+        self.logger.debug(f"Recognized text: {text[:50] if text else 'No text'}...")
         return text
     
     def recognize_with_details(self, image: Union[Image.Image, np.ndarray, str, Path],
@@ -198,7 +172,7 @@ class OCREngine(LoggerMixin):
         Args:
             image: 输入图像
             region: 识别区域
-            lang: 识别语言
+            lang: 识别语言（暂不支持）
         
         Returns:
             OCR结果列表
@@ -212,49 +186,47 @@ class OCREngine(LoggerMixin):
         
         results = []
         
-        if self.config.engine == 'pytesseract':
-            # 使用Tesseract获取详细信息
-            data = self._tesseract.image_to_data(
-                image,
-                lang=lang or self.config.lang,
-                config=self.config.tesseract_config,
-                output_type=self._tesseract.Output.DICT
-            )
-            
-            n_boxes = len(data['text'])
-            for i in range(n_boxes):
-                if int(data['conf'][i]) > 0:
-                    text = data['text'][i].strip()
-                    if text:
-                        x = data['left'][i] + region_offset[0]
-                        y = data['top'][i] + region_offset[1]
-                        w = data['width'][i]
-                        h = data['height'][i]
-                        
-                        results.append(OCRResult(
-                            text=text,
-                            confidence=int(data['conf'][i]) / 100.0,
-                            bbox=(x, y, w, h),
-                            position=(x, y)
-                        ))
+        # 使用PaddleOCR获取详细信息
+        try:
+            # 使用predict方法（新版本推荐）
+            ocr_results = self._paddleocr.predict(np.array(image))
+        except AttributeError:
+            # 如果predict方法不存在，使用ocr方法
+            ocr_results = self._paddleocr.ocr(np.array(image))
         
-        else:
-            # 使用PaddleOCR获取详细信息
-            ocr_results = self._paddleocr.ocr(np.array(image), cls=self.config.use_angle_cls)
+        if ocr_results and len(ocr_results) > 0:
+            result = ocr_results[0]
             
-            if ocr_results and ocr_results[0]:
-                for line in ocr_results[0]:
-                    bbox = line[0]
-                    text = line[1][0]
-                    confidence = line[1][1]
+            # 处理新版本PaddleOCR的返回格式
+            if hasattr(result, '__getitem__') and 'rec_texts' in result:
+                # 新格式：result是一个OCRResult对象，包含rec_texts和rec_scores
+                texts = result.get('rec_texts', [])
+                scores = result.get('rec_scores', [])
+                boxes = result.get('rec_boxes', [])
+                polys = result.get('rec_polys', result.get('dt_polys', []))
+                
+                for i in range(len(texts)):
+                    text = texts[i] if i < len(texts) else ''
+                    confidence = float(scores[i]) if i < len(scores) else 0.0
                     
-                    # 计算边界框
-                    x_coords = [p[0] for p in bbox]
-                    y_coords = [p[1] for p in bbox]
-                    x = int(min(x_coords)) + region_offset[0]
-                    y = int(min(y_coords)) + region_offset[1]
-                    w = int(max(x_coords) - min(x_coords))
-                    h = int(max(y_coords) - min(y_coords))
+                    # 获取边界框
+                    if i < len(polys) and len(polys[i]) >= 4:
+                        poly = polys[i]
+                        x_coords = [p[0] for p in poly]
+                        y_coords = [p[1] for p in poly]
+                        x = int(min(x_coords)) + region_offset[0]
+                        y = int(min(y_coords)) + region_offset[1]
+                        w = int(max(x_coords) - min(x_coords))
+                        h = int(max(y_coords) - min(y_coords))
+                    elif i < len(boxes) and len(boxes[i]) >= 4:
+                        # 使用rec_boxes作为备选
+                        box = boxes[i]
+                        x = int(box[0]) + region_offset[0]
+                        y = int(box[1]) + region_offset[1]
+                        w = int(box[2] - box[0])
+                        h = int(box[3] - box[1])
+                    else:
+                        x, y, w, h = 0, 0, 0, 0
                     
                     if confidence >= self.config.rec_thresh:
                         results.append(OCRResult(
@@ -263,6 +235,35 @@ class OCREngine(LoggerMixin):
                             bbox=(x, y, w, h),
                             position=(x, y)
                         ))
+            else:
+                # 旧格式：result是一个列表，每个元素包含[bbox, (text, score)]
+                try:
+                    for line in result:
+                        if isinstance(line, (list, tuple)) and len(line) >= 2:
+                            bbox = line[0]
+                            text = line[1][0] if isinstance(line[1], (list, tuple)) else str(line[1])
+                            confidence = line[1][1] if isinstance(line[1], (list, tuple)) and len(line[1]) > 1 else 1.0
+                            
+                            # 计算边界框
+                            if bbox and len(bbox) >= 4:
+                                x_coords = [p[0] for p in bbox]
+                                y_coords = [p[1] for p in bbox]
+                                x = int(min(x_coords)) + region_offset[0]
+                                y = int(min(y_coords)) + region_offset[1]
+                                w = int(max(x_coords) - min(x_coords))
+                                h = int(max(y_coords) - min(y_coords))
+                            else:
+                                x, y, w, h = 0, 0, 0, 0
+                            
+                            if confidence >= self.config.rec_thresh:
+                                results.append(OCRResult(
+                                    text=text,
+                                    confidence=float(confidence),
+                                    bbox=(x, y, w, h),
+                                    position=(x, y)
+                                ))
+                except (IndexError, TypeError, KeyError) as e:
+                    self.logger.warning(f"Failed to parse OCR result: {e}")
         
         self.logger.debug(f"Recognized {len(results)} text regions")
         return results
@@ -431,32 +432,6 @@ class OCREngine(LoggerMixin):
         # 转换回PIL Image
         return Image.fromarray(processed)
     
-    def _recognize_with_tesseract(self, image: Image.Image, lang: Optional[str] = None) -> str:
-        """
-        使用Tesseract识别文字
-        
-        Args:
-            image: 输入图像
-            lang: 识别语言
-        
-        Returns:
-            识别的文本
-        """
-        if not self._tesseract:
-            raise OCREngineNotFoundError("Tesseract not initialized")
-        
-        try:
-            text = self._tesseract.image_to_string(
-                image,
-                lang=lang or self.config.lang,
-                config=self.config.tesseract_config
-            )
-            return text
-            
-        except Exception as e:
-            self.logger.error(f"Tesseract recognition error: {e}")
-            raise OCRRecognitionError(f"Tesseract error: {e}")
-    
     def _recognize_with_paddleocr(self, image: Image.Image) -> str:
         """
         使用PaddleOCR识别文字
@@ -475,16 +450,39 @@ class OCREngine(LoggerMixin):
             img_array = np.array(image)
             
             # 执行OCR
-            result = self._paddleocr.ocr(img_array, cls=self.config.use_angle_cls)
+            try:
+                # 使用predict方法（新版本推荐）
+                result = self._paddleocr.predict(img_array)
+            except AttributeError:
+                # 如果predict方法不存在，使用ocr方法
+                result = self._paddleocr.ocr(img_array)
             
             # 提取文本
             texts = []
-            if result and result[0]:
-                for line in result[0]:
-                    text = line[1][0]
-                    confidence = line[1][1]
-                    if confidence >= self.config.rec_thresh:
-                        texts.append(text)
+            if result and len(result) > 0:
+                ocr_result = result[0]
+                
+                # 处理新版本PaddleOCR的返回格式
+                if hasattr(ocr_result, '__getitem__') and 'rec_texts' in ocr_result:
+                    # 新格式：result是一个OCRResult对象
+                    rec_texts = ocr_result.get('rec_texts', [])
+                    rec_scores = ocr_result.get('rec_scores', [])
+                    
+                    for i, text in enumerate(rec_texts):
+                        confidence = float(rec_scores[i]) if i < len(rec_scores) else 0.0
+                        if confidence >= self.config.rec_thresh:
+                            texts.append(text)
+                else:
+                    # 旧格式：result是一个列表
+                    try:
+                        for line in ocr_result:
+                            if isinstance(line, (list, tuple)) and len(line) >= 2:
+                                text = line[1][0] if isinstance(line[1], (list, tuple)) else str(line[1])
+                                confidence = line[1][1] if isinstance(line[1], (list, tuple)) and len(line[1]) > 1 else 1.0
+                                if float(confidence) >= self.config.rec_thresh:
+                                    texts.append(text)
+                    except (IndexError, TypeError, KeyError) as e:
+                        self.logger.warning(f"Failed to parse OCR result: {e}")
             
             return ' '.join(texts)
             
@@ -510,20 +508,6 @@ class OCREngine(LoggerMixin):
         
         return text.strip()
     
-    def switch_engine(self, engine: str) -> None:
-        """
-        切换OCR引擎
-        
-        Args:
-            engine: 引擎名称 ('pytesseract' 或 'paddleocr')
-        """
-        if engine == self.config.engine:
-            return
-        
-        self.config.engine = engine
-        self._init_engine()
-        self.logger.info(f"Switched OCR engine to: {engine}")
-    
     def set_language(self, lang: str) -> None:
         """
         设置识别语言
@@ -532,61 +516,7 @@ class OCREngine(LoggerMixin):
             lang: 语言代码
         """
         self.config.lang = lang
-        
-        # 如果使用PaddleOCR，需要重新初始化
-        if self.config.engine == 'paddleocr':
-            self._init_paddleocr()
-        
-        self.logger.info(f"OCR language set to: {lang}")
-    
-    def benchmark(self, image: Union[Image.Image, np.ndarray]) -> Dict[str, Any]:
-        """
-        对比不同引擎的性能
-        
-        Args:
-            image: 测试图像
-        
-        Returns:
-            性能测试结果
-        """
-        import time
-        
-        results = {}
-        
-        # 测试Tesseract
-        try:
-            self.switch_engine('pytesseract')
-            start = time.time()
-            text_tesseract = self.recognize_text(image)
-            time_tesseract = time.time() - start
-            
-            results['tesseract'] = {
-                'text': text_tesseract,
-                'time': time_tesseract,
-                'success': True
-            }
-        except Exception as e:
-            results['tesseract'] = {
-                'error': str(e),
-                'success': False
-            }
-        
-        # 测试PaddleOCR
-        try:
-            self.switch_engine('paddleocr')
-            start = time.time()
-            text_paddle = self.recognize_text(image)
-            time_paddle = time.time() - start
-            
-            results['paddleocr'] = {
-                'text': text_paddle,
-                'time': time_paddle,
-                'success': True
-            }
-        except Exception as e:
-            results['paddleocr'] = {
-                'error': str(e),
-                'success': False
-            }
-        
-        return results
+        # PaddleOCR需要重新初始化
+        self._engine_initialized = False
+        self._paddleocr = None
+        self.logger.info(f"OCR language set to: {lang}, will reinitialize on next use")

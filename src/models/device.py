@@ -17,7 +17,8 @@ class ConnectionType(Enum):
 
 class DeviceStatus(Enum):
     """设备状态"""
-    CONNECTED = "connected"
+    ONLINE = "online"  # 设备在线（相当于之前的CONNECTED）
+    CONNECTED = "connected"  # 保留以兼容
     DISCONNECTED = "disconnected"
     OFFLINE = "offline"
     UNAUTHORIZED = "unauthorized"
@@ -66,7 +67,7 @@ class Device:
     @property
     def is_connected(self) -> bool:
         """检查设备是否已连接"""
-        return self.status == DeviceStatus.CONNECTED
+        return self.status in (DeviceStatus.CONNECTED, DeviceStatus.ONLINE)
     
     @property
     def is_wireless(self) -> bool:

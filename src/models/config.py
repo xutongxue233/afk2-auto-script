@@ -187,6 +187,12 @@ class AppConfig:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'AppConfig':
         """从字典创建配置实例"""
+        # 复制数据以避免修改原始数据
+        data = data.copy()
+        
+        # 移除元数据字段（不是配置的一部分）
+        data.pop('_metadata', None)
+        
         # 特殊处理元组类型
         if 'ui' in data and 'window_size' in data['ui']:
             data['ui']['window_size'] = tuple(data['ui']['window_size'])

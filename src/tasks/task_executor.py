@@ -12,8 +12,12 @@ import traceback
 from src.services.log_service import LoggerMixin
 from src.models.task import TaskInfo, TaskStatus
 from src.controller.afk2_controller import AFK2Controller
-from src.services.adb_service import ADBService
 from src.utils.exceptions import TaskError, TaskExecutionError
+
+# 避免循环导入
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from src.services.adb_service import ADBService
 
 
 class TaskExecutor(LoggerMixin):
@@ -22,14 +26,16 @@ class TaskExecutor(LoggerMixin):
     负责执行具体的任务逻辑
     """
     
-    def __init__(self, game_controller: Optional[AFK2Controller] = None):
+    def __init__(self, game_controller: Optional[AFK2Controller] = None, adb_service: Optional['ADBService'] = None):
         """
         初始化任务执行器
         
         Args:
             game_controller: 游戏控制器
+            adb_service: ADB服务实例
         """
         self.game_controller = game_controller
+        self.adb_service = adb_service
         
         # 任务执行函数注册表
         self._executors: Dict[str, Callable] = {}
@@ -59,29 +65,31 @@ class TaskExecutor(LoggerMixin):
         
         try:
             # 获取执行器
-            executor = self._executors.get(task.task_type)
+            task_type = task.metadata.get('task_type') if hasattr(task, 'metadata') else task.task_type
+            executor = self._executors.get(task_type)
             if not executor:
-                raise TaskExecutionError(f"No executor for task type: {task.task_type}")
+                raise TaskExecutionError(f"No executor for task type: {task_type}")
             
-            self.logger.info(f"Executing task: {task.name} ({task.task_id})")
+            self.logger.info(f"Executing task: {task.task_name} ({task.task_id})")
             
             # 设置超时
-            if task.timeout:
-                result = self._execute_with_timeout(executor, task, task.timeout)
+            timeout = task.metadata.get('timeout') if hasattr(task, 'metadata') else None
+            if timeout:
+                result = self._execute_with_timeout(executor, task, timeout)
             else:
                 result = executor(task, self._context)
             
             # 更新统计
-            self._update_stats(task.task_type, True, time.time() - start_time)
+            self._update_stats(task_type, True, time.time() - start_time)
             
-            self.logger.info(f"Task executed successfully: {task.name}")
+            self.logger.info(f"Task executed successfully: {task.task_name}")
             return result
             
         except Exception as e:
             # 更新统计
-            self._update_stats(task.task_type, False, time.time() - start_time)
+            self._update_stats(task_type, False, time.time() - start_time)
             
-            self.logger.error(f"Task execution failed: {task.name} - {e}")
+            self.logger.error(f"Task execution failed: {task.task_name} - {e}")
             self.logger.debug(traceback.format_exc())
             raise TaskExecutionError(f"Task execution failed: {e}")
     
@@ -148,6 +156,9 @@ class TaskExecutor(LoggerMixin):
         
         # 自定义脚本执行器
         self.register_executor('custom_script', self._execute_custom_script)
+        
+        # 每日挂机奖励执行器
+        self.register_executor('daily_idle_reward', self._execute_daily_idle_reward)
     
     def _execute_with_timeout(self, executor: Callable, task: TaskInfo, 
                             timeout: int) -> Any:
@@ -255,7 +266,8 @@ class TaskExecutor(LoggerMixin):
             raise TaskExecutionError("Game controller not available")
         
         # 获取参数
-        max_battles = task.params.get('max_battles', 10)
+        params = task.metadata.get('params', {}) if hasattr(task, 'metadata') else task.params
+        max_battles = params.get('max_battles', 10)
         
         # 执行征战
         result = self.game_controller.auto_campaign(max_battles)
@@ -337,8 +349,9 @@ class TaskExecutor(LoggerMixin):
         Returns:
             脚本执行结果
         """
-        script_path = task.params.get('script_path')
-        script_code = task.params.get('script_code')
+        params = task.metadata.get('params', {}) if hasattr(task, 'metadata') else task.params
+        script_path = params.get('script_path')
+        script_code = params.get('script_code')
         
         if script_path:
             # 执行脚本文件
@@ -362,3 +375,83 @@ class TaskExecutor(LoggerMixin):
         
         # 返回结果
         return exec_locals.get('result', True)
+    
+    def _execute_daily_idle_reward(self, task: TaskInfo, context: Dict[str, Any]) -> bool:
+        """
+        执行每日挂机奖励任务
+        
+        Args:
+            task: 任务信息
+            context: 执行上下文
+        
+        Returns:
+            是否成功
+        """
+        if not self.game_controller:
+            raise TaskExecutionError("Game controller not available")
+        
+        # 导入任务类
+        from src.tasks.daily_idle_reward_task import DailyIdleRewardTask
+        from src.services.adb_service import ADBService
+        from src.recognition.image_recognizer import ImageRecognizer
+        from src.recognition.ocr_engine import OCREngine
+        from pathlib import Path
+        
+        # 获取参数
+        params = task.metadata.get('params', {}) if hasattr(task, 'metadata') else {}
+        check_idle_mode = params.get('check_idle_mode', True)
+        use_hourglass = params.get('use_hourglass', True)
+        
+        try:
+            # 使用传入的ADB服务或创建新的
+            if self.adb_service:
+                adb_service = self.adb_service
+                self.logger.info("Using provided ADB service")
+            else:
+                # 创建新的ADB服务实例
+                adb_service = ADBService()
+                
+                # 尝试连接设备（如果没有已连接的设备）
+                if not adb_service.current_device:
+                    devices = adb_service.get_devices()
+                    online_devices = [d for d in devices if d.status.value == 'device']
+                    
+                    if online_devices:
+                        # 连接第一个在线设备
+                        if adb_service.connect_device(online_devices[0].device_id):
+                            self.logger.info(f"Connected to device: {online_devices[0].device_id}")
+                        else:
+                            raise TaskExecutionError("Failed to connect to device")
+                    else:
+                        raise TaskExecutionError("No online devices found")
+            
+            # 检查设备连接
+            if not adb_service.current_device:
+                raise TaskExecutionError("No device connected")
+            
+            # 设置图像识别器的模板目录
+            images_dir = Path(__file__).parent.parent / 'resources' / 'images'
+            image_recognizer = ImageRecognizer(template_dir=images_dir)
+            
+            # OCR引擎可选
+            ocr_engine = None
+            try:
+                ocr_engine = OCREngine()
+            except Exception as e:
+                self.logger.warning(f"OCR engine not available: {e}")
+            
+            # 创建任务实例
+            idle_reward_task = DailyIdleRewardTask(adb_service, image_recognizer, ocr_engine)
+            
+            # 执行任务
+            result = idle_reward_task.execute()
+            
+            if result:
+                self.logger.info("Daily idle reward task completed successfully")
+            else:
+                self.logger.warning("Daily idle reward task completed with warnings")
+            
+            return result
+        except Exception as e:
+            self.logger.error(f"Daily idle reward task failed: {e}")
+            raise TaskExecutionError(f"Daily idle reward task execution failed: {e}")
