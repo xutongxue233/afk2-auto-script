@@ -147,12 +147,20 @@ class BaseGameController(LoggerMixin, ABC):
             
             # 检查游戏是否已运行
             if self.is_game_running():
-                self.logger.info("Game is already running")
-                self.state = GameState.IN_GAME
-                return True
+                self.logger.info("Game is already running, bringing to foreground...")
+                # 将游戏切换到前台
+                if self.adb.bring_app_to_foreground(self.config.package_name):
+                    self.logger.info("Game brought to foreground successfully")
+                    self.state = GameState.IN_GAME
+                    return True
+                else:
+                    self.logger.warning("Failed to bring game to foreground, trying to restart...")
+                    # 如果切换失败，继续尝试重新启动
             
             # 启动应用
-            if not self.adb.start_app(self.config.package_name, self.config.main_activity):
+            # 如果有 main_activity 则传递，否则只传包名让 ADB 自动启动
+            activity = getattr(self.config, 'main_activity', None)
+            if not self.adb.start_app(self.config.package_name, activity):
                 raise GameStartupError("Failed to start game app")
             
             self.state = GameState.LOADING

@@ -57,7 +57,7 @@ class GameConfig:
         retry_on_failure: 失败时是否重试
         max_retry_count: 最大重试次数
     """
-    package_name: str = "com.lilith.odyssey.cn"
+    package_name: str = "com.lilithgame.hgame.cn"  # 剑与远征：启程国服包名
     activity_name: str = ".MainActivity"
     startup_wait_time: int = 10
     operation_delay: float = 0.5

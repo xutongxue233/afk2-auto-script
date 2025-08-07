@@ -7,7 +7,7 @@ adb:
   auto_connect: true
   reconnect_attempts: 3
 game:
-  package_name: com.lilith.odyssey.cn
+  package_name: com.lilithgame.igame.android.cn
   activity_name: .MainActivity
   startup_wait_time: 10
   operation_delay: 0.5

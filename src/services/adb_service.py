@@ -414,9 +414,70 @@ class ADBService(LoggerMixin):
             self.current_device = None
             self.logger.info("Device disconnected")
     
+    def bring_app_to_foreground(self, package_name: str) -> bool:
+        """
+        将应用切换到前台
+        
+        Args:
+            package_name: 应用包名
+        
+        Returns:
+            是否切换成功
+        """
+        if not self.current_device:
+            raise DeviceNotFoundError()
+        
+        try:
+            # 方法1：先尝试使用am start-activity命令（更可靠）
+            # 获取当前运行的activity
+            cmd = f"shell dumpsys activity activities | grep -E 'mFocusedActivity|mResumedActivity'"
+            current_activity = self.execute_command(cmd)
+            
+            # 尝试启动应用的主activity
+            cmd = f"shell am start -n {package_name}/.MainActivity"
+            output = self.execute_command(cmd)
+            
+            if "Error" not in output:
+                self.logger.info(f"App brought to foreground using am start: {package_name}")
+                return True
+            
+            # 方法2：使用monkey命令作为备选
+            cmd = f"shell monkey -p {package_name} -c android.intent.category.LAUNCHER 1"
+            output = self.execute_command(cmd)
+            
+            if "Events injected: 1" in output:
+                self.logger.info(f"App brought to foreground using monkey: {package_name}")
+                return True
+            
+            # 方法3：尝试使用am命令切换到应用最近的任务
+            cmd = f"shell am start --activity-brought-to-front -n {package_name}/."
+            output = self.execute_command(cmd)
+            
+            if "Error" not in output:
+                self.logger.info(f"App brought to foreground using am start --activity-brought-to-front: {package_name}")
+                return True
+            
+            # 方法4：最后尝试使用input keyevent切换应用
+            # 先按HOME键，再启动应用
+            self.execute_command("shell input keyevent KEYCODE_HOME")
+            time.sleep(0.5)
+            cmd = f"shell monkey -p {package_name} 1"
+            output = self.execute_command(cmd)
+            
+            if output and "Error" not in output:
+                self.logger.info(f"App brought to foreground using HOME+monkey: {package_name}")
+                return True
+            
+            self.logger.warning(f"All methods failed to bring app to foreground: {package_name}")
+            return False
+                
+        except Exception as e:
+            self.logger.error(f"Failed to bring app to foreground: {e}")
+            return False
+    
     def start_app(self, package_name: str, activity_name: Optional[str] = None) -> bool:
         """
-        启动应用
+        启动应用（如果应用已运行则切换到前台）
         
         Args:
             package_name: 应用包名
@@ -429,6 +490,11 @@ class ADBService(LoggerMixin):
             raise DeviceNotFoundError()
         
         try:
+            # 先检查应用是否已经在运行
+            if self.is_app_running(package_name):
+                self.logger.info(f"App {package_name} is already running, bringing to foreground...")
+                return self.bring_app_to_foreground(package_name)
+            
             # 构建启动命令
             if activity_name:
                 if not activity_name.startswith('.'):
@@ -481,7 +547,7 @@ class ADBService(LoggerMixin):
     
     def is_app_running(self, package_name: str) -> bool:
         """
-        检查应用是否在运行
+        检查应用是否在运行（检查进程是否存在）
         
         Args:
             package_name: 应用包名
@@ -492,66 +558,65 @@ class ADBService(LoggerMixin):
         if not self.current_device:
             return False
         
-        # 方法1：检查运行中的服务
-        try:
-            cmd = f"shell dumpsys activity services {package_name}"
-            output = self.execute_command(cmd, timeout=5)
-            if output and "ServiceRecord" in output:
-                self.logger.debug(f"Found services for {package_name}")
-                return True
-        except Exception as e:
-            self.logger.debug(f"Failed to check services: {e}")
+        # 使用缓存机制，避免频繁调用
+        cache_key = f"app_running_{package_name}"
+        cache_time = 5  # 缓存5秒
         
-        # 方法2：检查正在运行的活动
-        try:
-            cmd = "shell dumpsys activity activities"
-            output = self.execute_command(cmd, timeout=5)
-            if output and package_name in output:
-                # 检查是否有活跃的活动
-                lines = output.split('\n')
-                for line in lines:
-                    if package_name in line and ("mResumedActivity" in line or "RESUMED" in line):
-                        self.logger.debug(f"Found resumed activity for {package_name}")
-                        return True
-        except Exception as e:
-            self.logger.debug(f"Failed to check activities: {e}")
+        # 检查缓存
+        if hasattr(self, '_app_status_cache'):
+            cached = self._app_status_cache.get(cache_key)
+            if cached and (time.time() - cached['time']) < cache_time:
+                return cached['status']
+        else:
+            self._app_status_cache = {}
         
-        # 方法3：检查进程列表（传统方法）
-        try:
-            cmd = "shell ps -A"
-            output = self.execute_command(cmd, timeout=5)
-            for line in output.split('\n'):
-                if package_name in line:
-                    self.logger.debug(f"Found process for {package_name}")
-                    return True
-        except Exception as e:
-            # 如果 -A 参数不支持，尝试不带参数
-            try:
-                cmd = "shell ps"
-                output = self.execute_command(cmd, timeout=5)
-                for line in output.split('\n'):
-                    if package_name in line:
-                        self.logger.debug(f"Found process for {package_name} (fallback)")
-                        return True
-            except Exception as e2:
-                self.logger.debug(f"Failed to check process: {e2}")
+        # 默认返回False
+        result = False
         
-        # 方法4：检查应用窗口
         try:
-            cmd = "shell dumpsys window windows"
+            # 方法1：检查进程是否存在（更可靠）
+            cmd = f"shell ps | grep {package_name}"
             output = self.execute_command(cmd, timeout=3)
-            if output and package_name in output:
-                # 检查是否有可见窗口
-                lines = output.split('\n')[:50]  # 只检查前50行
-                for line in lines:
-                    if package_name in line and ("mHasSurface=true" in line or "VISIBLE" in line):
-                        self.logger.debug(f"Found visible window for {package_name}")
-                        return True
+            
+            # 如果输出中包含包名，说明进程存在
+            if package_name in output:
+                self.logger.debug(f"Found {package_name} process running")
+                result = True
+            else:
+                # 方法2：通过dumpsys检查应用状态
+                cmd = f"shell dumpsys activity activities | grep {package_name}"
+                output = self.execute_command(cmd, timeout=3)
+                
+                if package_name in output:
+                    self.logger.debug(f"Found {package_name} in activity stack")
+                    result = True
+                else:
+                    # 方法3：检查运行的包列表
+                    cmd = "shell pm list packages -3"  # 列出第三方应用
+                    output = self.execute_command(cmd, timeout=3)
+                    
+                    # 检查包是否安装
+                    if f"package:{package_name}" in output:
+                        # 包已安装，再检查是否有活动的任务
+                        cmd = f"shell dumpsys activity recents | grep {package_name}"
+                        output = self.execute_command(cmd, timeout=3)
+                        if package_name in output:
+                            self.logger.debug(f"Found {package_name} in recent tasks")
+                            result = True
+                    
         except Exception as e:
-            self.logger.debug(f"Failed to check windows: {e}")
+            # 忽略错误，使用缓存或返回False
+            self.logger.debug(f"Check app status failed (will use cache or False): {e}")
+            if cache_key in self._app_status_cache:
+                return self._app_status_cache[cache_key]['status']
         
-        self.logger.debug(f"App {package_name} not found in any checks")
-        return False
+        # 更新缓存
+        self._app_status_cache[cache_key] = {
+            'status': result,
+            'time': time.time()
+        }
+        
+        return result
     
     def tap(self, x: int, y: int) -> None:
         """

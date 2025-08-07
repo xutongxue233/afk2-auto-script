@@ -79,7 +79,8 @@ class MainWindow(QMainWindow, LoggerMixin):
         ocr_config = OCRConfig(
             lang=self.config.recognition.ocr_language
         )
-        self.ocr_engine = OCREngine(ocr_config)
+        # 预加载OCR引擎，避免首次使用时的延迟
+        self.ocr_engine = OCREngine(ocr_config, preload=True)
         
         # 初始化游戏控制器
         self.game_controller = AFK2Controller(
@@ -107,9 +108,9 @@ class MainWindow(QMainWindow, LoggerMixin):
         """初始化用户界面"""
         self.setWindowTitle("AFK2 自动化脚本 v1.0")
         # 设置窗口大小
-        self.setGeometry(100, 100, 1000, 800)
-        self.setMinimumSize(900, 700)
-        self.setMaximumSize(1200, 900)
+        self.setGeometry(100, 100, 1200, 800)
+        self.setMinimumSize(1000, 700)
+        self.setMaximumSize(1600, 1000)
         
         # 设置窗口样式 - 紧凑的样式
         self.setStyleSheet("""
@@ -144,13 +145,13 @@ class MainWindow(QMainWindow, LoggerMixin):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         
-        # 创建主布局
-        main_layout = QVBoxLayout(central_widget)
+        # 创建主布局（水平布局）
+        main_layout = QHBoxLayout(central_widget)
         main_layout.setContentsMargins(2, 2, 2, 2)
         main_layout.setSpacing(2)
         
-        # 创建分割器
-        splitter = QSplitter(Qt.Orientation.Vertical)
+        # 创建水平分割器
+        splitter = QSplitter(Qt.Orientation.Horizontal)
         main_layout.addWidget(splitter)
         
         # 创建标签页
@@ -160,14 +161,13 @@ class MainWindow(QMainWindow, LoggerMixin):
         # 添加各个标签页
         self._add_tabs()
         
-        # 创建日志窗口
+        # 创建日志窗口（放在右侧）
         self.log_widget = LogWidget()
-        self.log_widget.setMaximumHeight(100)  # 日志窗口高度
-        self.log_widget.setMinimumHeight(60)
+        self.log_widget.setMinimumWidth(300)  # 日志窗口最小宽度
         splitter.addWidget(self.log_widget)
         
-        # 设置分割器比例
-        splitter.setSizes([350, 80])
+        # 设置分割器比例（左侧标签页：右侧日志 = 7:3）
+        splitter.setSizes([700, 300])
     
     def _add_tabs(self):
         """添加标签页"""
@@ -320,55 +320,43 @@ class MainWindow(QMainWindow, LoggerMixin):
         self.logger.info("Task scheduler stopped")
     
     def _update_status(self):
-        """更新状态栏 - 优化版本，减少ADB调用"""
-        # 缓存上次的状态，避免重复更新
-        if not hasattr(self, '_last_status_cache'):
-            self._last_status_cache = {}
-        
-        # 更新设备状态（从内存缓存获取，不执行ADB命令）
-        if self.adb_service.current_device:
-            device_status = f"已连接: {self.adb_service.current_device.device_id}"
-        else:
-            device_status = "未连接"
-        
-        # 游戏状态检查（降低频率）
-        # 只有在任务运行时才检查游戏状态，否则使用缓存
-        stats = self.task_manager.get_statistics()
-        if stats['running'] > 0:
-            # 有任务运行时才检查游戏状态
-            try:
-                if self.game_controller.is_game_running():
-                    game_status = "游戏运行中"
-                else:
-                    game_status = "游戏未运行"
-                self._last_status_cache['game_status'] = game_status
-            except Exception as e:
-                # 检查失败时使用缓存状态
-                game_status = self._last_status_cache.get('game_status', "状态未知")
-                self.logger.debug(f"Failed to check game status: {e}")
-        else:
-            # 无任务时使用缓存或默认状态
-            game_status = self._last_status_cache.get('game_status', "游戏未运行")
-        
-        # 任务状态（内存获取，无IO开销）
-        task_status = f"任务: {stats['running']}/{stats['total']}"
-        
-        # 检查状态是否变化，避免无用的UI更新
-        current_status = {
-            'device': device_status,
-            'game': game_status,
-            'task': task_status
-        }
-        
-        if self._last_status_cache.get('ui_status') != current_status:
-            # 只有状态变化时才更新UI
-            self.status_widget.update_status(
-                device_status=device_status,
-                game_status=game_status,
-                task_status=task_status
-            )
-            self._last_status_cache['ui_status'] = current_status
-            self.logger.debug("Status bar updated")
+        """更新状态栏 - 简化版本，只更新设备和任务状态"""
+        try:
+            # 缓存上次的状态，避免重复更新
+            if not hasattr(self, '_last_status_cache'):
+                self._last_status_cache = {}
+            
+            # 更新设备状态（从内存缓存获取，不执行ADB命令）
+            if self.adb_service.current_device:
+                device_status = f"已连接: {self.adb_service.current_device.device_id}"
+            else:
+                device_status = "未连接"
+            
+            # 任务状态（内存获取，无IO开销）
+            stats = self.task_manager.get_statistics()
+            task_status = f"任务: {stats['running']}/{stats['total']}"
+            
+            # 检查状态是否变化，避免无用的UI更新
+            current_status = {
+                'device': device_status,
+                'task': task_status
+            }
+            
+            if self._last_status_cache != current_status:
+                # 只有状态变化时才更新UI
+                try:
+                    self.status_widget.update_status(
+                        device_status=device_status,
+                        task_status=task_status
+                    )
+                    self._last_status_cache = current_status
+                except Exception as e:
+                    self.logger.error(f"Failed to update status widget: {e}")
+                    
+        except Exception as e:
+            # 捕获所有异常，防止定时器任务崩溃导致程序退出
+            self.logger.error(f"Status update error (non-critical): {e}")
+            # 不重新抛出异常，让程序继续运行
     
     # ========== 槽函数 ==========
     
@@ -458,6 +446,14 @@ class MainWindow(QMainWindow, LoggerMixin):
         )
         
         if reply == QMessageBox.StandardButton.Yes:
+            # 停止状态定时器
+            if hasattr(self, 'status_timer'):
+                self.status_timer.stop()
+            
+            # 清理各个标签页的资源
+            if hasattr(self, 'adb_tab'):
+                self.adb_tab.cleanup()
+            
             # 保存设置
             self._save_settings()
             

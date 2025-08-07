@@ -17,7 +17,7 @@ from PyQt6.QtGui import QColor, QFont
 from src.tasks.task_manager import TaskManager
 from src.tasks.task_scheduler import TaskScheduler
 from src.tasks.builtin_tasks import (
-    DailyTask, CampaignTask, CollectRewardTask,
+    DailyIdleRewardTaskBuilder,
     TaskTemplateManager
 )
 from src.controller.afk2_controller import AFK2Controller
@@ -76,6 +76,12 @@ class TaskTab(QWidget, LoggerMixin):
         quick_layout = QVBoxLayout()
         quick_group.setLayout(quick_layout)
         left_layout.addWidget(quick_group)
+        
+        # 唤醒游戏选择框
+        self.wake_game_check = QCheckBox("唤醒游戏")
+        self.wake_game_check.setToolTip("在执行任务前先确保游戏处于运行状态")
+        self.wake_game_check.setChecked(True)  # 默认勾选
+        quick_layout.addWidget(self.wake_game_check)
         
         # 快速任务按钮
         quick_btn_layout = QHBoxLayout()
@@ -208,6 +214,8 @@ class TaskTab(QWidget, LoggerMixin):
         self.clear_btn.clicked.connect(self._clear_completed_tasks)
         control_layout.addWidget(self.clear_btn)
         
+        control_layout.addStretch()
+        
         # 添加执行按钮
         self.execute_btn = QPushButton("执行选中")
         self.execute_btn.clicked.connect(self._execute_selected_task)
@@ -218,8 +226,6 @@ class TaskTab(QWidget, LoggerMixin):
         self.execute_all_btn.clicked.connect(self._execute_all_pending_tasks)
         self.execute_all_btn.setStyleSheet("QPushButton { background-color: #2196F3; color: white; font-weight: bold; }")
         control_layout.addWidget(self.execute_all_btn)
-        
-        control_layout.addStretch()
         
         # 任务表格
         self.task_table = QTableWidget()
@@ -318,40 +324,29 @@ class TaskTab(QWidget, LoggerMixin):
             self.template_combo.addItem(template.description, template.name)
     
     def _execute_daily_tasks(self):
-        """执行日常任务"""
+        """执行每日挂机奖励任务"""
         try:
-            # 创建日常任务
-            daily = DailyTask(self.task_manager)
-            task_id = daily.create()
+            # 创建每日挂机奖励任务
+            daily_idle = DailyIdleRewardTaskBuilder(self.task_manager)
+            task_id = daily_idle.create()
             
-            self.logger.info(f"Daily task created: {task_id}")
+            # 获取任务并设置唤醒游戏标志
+            task = self.task_manager.get_task(task_id)
+            if task and self.wake_game_check.isChecked():
+                task.metadata['wake_game'] = True
+            
+            self.logger.info(f"Daily idle reward task created: {task_id}")
             self._refresh_task_list()
         except Exception as e:
             QMessageBox.critical(self, "错误", f"创建任务失败: {e}")
     
     def _execute_campaign(self):
-        """执行征战任务"""
-        try:
-            # 创建征战任务
-            campaign = CampaignTask(self.task_manager)
-            task_id = campaign.create(max_battles=10)
-            
-            self.logger.info(f"Campaign task created: {task_id}")
-            self._refresh_task_list()
-        except Exception as e:
-            QMessageBox.critical(self, "错误", f"创建任务失败: {e}")
+        """执行征战任务（暂不支持）"""
+        QMessageBox.warning(self, "不支持", "征战任务暂不支持")
     
     def _collect_rewards(self):
-        """收集奖励"""
-        try:
-            # 创建收集奖励任务
-            collect = CollectRewardTask(self.task_manager)
-            task_id = collect.create()
-            
-            self.logger.info(f"Collect rewards task created: {task_id}")
-            self._refresh_task_list()
-        except Exception as e:
-            QMessageBox.critical(self, "错误", f"创建任务失败: {e}")
+        """收集奖励（暂不支持）"""
+        QMessageBox.warning(self, "不支持", "收集奖励任务暂不支持")
     
     def _create_from_template(self):
         """从模板创建任务"""
@@ -554,6 +549,10 @@ class TaskTab(QWidget, LoggerMixin):
             return
         
         try:
+            # 检查是否需要唤醒游戏
+            if self.wake_game_check.isChecked():
+                self._wake_game_if_needed()
+            
             # 调度任务执行
             self.task_scheduler.schedule_task(task_id)
             QMessageBox.information(self, "成功", f"任务 {task.task_name} 已开始执行")
@@ -564,6 +563,32 @@ class TaskTab(QWidget, LoggerMixin):
         except Exception as e:
             QMessageBox.critical(self, "错误", f"执行任务失败: {e}")
             self.logger.error(f"Failed to execute task {task_id}: {e}")
+    
+    def _wake_game_if_needed(self):
+        """如果需要，唤醒游戏"""
+        try:
+            # 检查游戏是否已运行
+            if not self.game_controller.is_game_running():
+                self.logger.info("游戏未运行，正在唤醒游戏...")
+                
+                # 创建唤醒游戏任务
+                from src.tasks.wake_game_task import WakeGameTask
+                wake_task = WakeGameTask(
+                    name="唤醒游戏（任务前准备）",
+                    wait_for_main=True,
+                    startup_timeout=30.0
+                )
+                
+                # 执行唤醒任务
+                if wake_task.execute(self.game_controller):
+                    self.logger.info("游戏唤醒成功")
+                else:
+                    raise Exception("游戏唤醒失败")
+            else:
+                self.logger.info("游戏已在运行")
+        except Exception as e:
+            self.logger.error(f"唤醒游戏失败: {e}")
+            raise
     
     def _execute_all_pending_tasks(self):
         """执行所有待执行的任务"""
@@ -585,32 +610,40 @@ class TaskTab(QWidget, LoggerMixin):
         if reply != QMessageBox.StandardButton.Yes:
             return
         
-        # 按优先级排序任务
-        pending_tasks.sort(key=lambda t: (
-            0 if t.priority == TaskPriority.HIGH else 
-            1 if t.priority == TaskPriority.NORMAL else 2
-        ))
-        
-        executed_count = 0
-        failed_tasks = []
-        
-        for task in pending_tasks:
-            try:
-                self.task_scheduler.schedule_task(task.task_id)
-                executed_count += 1
-                self.logger.info(f"Task scheduled: {task.task_id} - {task.task_name}")
-            except Exception as e:
-                failed_tasks.append(task.task_name)
-                self.logger.error(f"Failed to schedule task {task.task_id}: {e}")
-        
-        # 显示结果
-        if executed_count > 0:
-            message = f"已开始执行 {executed_count} 个任务"
-            if failed_tasks:
-                message += f"\n\n以下任务执行失败:\n" + "\n".join(failed_tasks)
-            QMessageBox.information(self, "执行结果", message)
-        else:
-            QMessageBox.warning(self, "警告", "没有任务被执行")
+        try:
+            # 检查是否需要唤醒游戏
+            if self.wake_game_check.isChecked():
+                self._wake_game_if_needed()
+            
+            # 按优先级排序任务
+            pending_tasks.sort(key=lambda t: (
+                0 if t.priority == TaskPriority.HIGH else 
+                1 if t.priority == TaskPriority.NORMAL else 2
+            ))
+            
+            executed_count = 0
+            failed_tasks = []
+            
+            for task in pending_tasks:
+                try:
+                    self.task_scheduler.schedule_task(task.task_id)
+                    executed_count += 1
+                    self.logger.info(f"Task scheduled: {task.task_id} - {task.task_name}")
+                except Exception as e:
+                    failed_tasks.append(task.task_name)
+                    self.logger.error(f"Failed to schedule task {task.task_id}: {e}")
+            
+            # 显示结果
+            if executed_count > 0:
+                message = f"已开始执行 {executed_count} 个任务"
+                if failed_tasks:
+                    message += f"\n\n以下任务执行失败:\n" + "\n".join(failed_tasks)
+                QMessageBox.information(self, "执行结果", message)
+            else:
+                QMessageBox.warning(self, "警告", "没有任务被执行")
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"执行任务失败: {e}")
+            self.logger.error(f"Failed to execute all tasks: {e}")
         
         # 刷新任务列表
         self._refresh_task_list()

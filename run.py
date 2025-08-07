@@ -4,11 +4,11 @@
 AFK2自动化脚本主程序
 """
 
-import sys
 import argparse
 import logging
+import sys
+from datetime import datetime
 from pathlib import Path
-from datetime import datetime, time as datetime_time
 
 # 添加项目根目录到Python路径
 sys.path.insert(0, str(Path(__file__).parent))
@@ -22,8 +22,7 @@ from src.recognition.ocr_engine import OCREngine, OCRConfig
 from src.tasks.task_manager import TaskManager
 from src.tasks.task_scheduler import TaskScheduler
 from src.tasks.task_executor import TaskExecutor
-from src.tasks.builtin_tasks import DailyTask, CampaignTask, CollectRewardTask
-from src.models.config import AppConfig, ADBConfig, GameConfig
+from src.tasks.builtin_tasks import DailyIdleRewardTaskBuilder
 
 
 def setup_components():
@@ -48,7 +47,8 @@ def setup_components():
     ocr_config = OCRConfig(
         lang=config.recognition.ocr_language
     )
-    ocr_engine = OCREngine(ocr_config)
+    # 启动时预加载OCR引擎，避免首次使用时的延迟
+    ocr_engine = OCREngine(ocr_config, preload=True)
     
     # 初始化游戏控制器
     game_controller = AFK2Controller(
@@ -84,59 +84,59 @@ def setup_components():
     }
 
 
-def run_daily_tasks(components):
+def run_daily_idle_reward(components):
     """
-    运行日常任务
+    运行每日挂机奖励任务
     
     Args:
         components: 组件字典
     """
-    print("开始运行日常任务...")
+    print("开始运行每日挂机奖励任务...")
     
     controller = components['controller']
+    adb_service = components['adb_service']
+    image_recognizer = components['image_recognizer']
+    ocr_engine = components['ocr_engine']
     
-    # 启动游戏
-    if not controller.is_game_running():
-        print("启动游戏...")
-        controller.start_game()
+    # 创建唤醒游戏任务
+    from src.tasks.wake_game_task import WakeGameTask
+    wake_task = WakeGameTask()
     
-    # 运行日常任务
-    results = controller.perform_daily_tasks()
+    # 执行唤醒游戏任务
+    print("正在唤醒游戏...")
+    if wake_task.execute(controller):
+        print("游戏唤醒成功")
+    else:
+        print("游戏唤醒失败")
+        return False
     
-    print("\n任务执行结果：")
-    for task_name, success in results.items():
-        status = "✓" if success else "✗"
-        print(f"  {status} {task_name}")
+    # 运行每日挂机奖励任务
+    from src.tasks.daily_idle_reward_task import DailyIdleRewardTask
+    task = DailyIdleRewardTask(adb_service, image_recognizer, ocr_engine)
+    result = task.execute()
     
-    return results
+    if result:
+        print("✓ 每日挂机奖励领取成功")
+    else:
+        print("✗ 每日挂机奖励领取失败")
+    
+    return result
+
+# 保留原来的函数名以保持兼容性
+def run_daily_tasks(components):
+    return run_daily_idle_reward(components)
 
 
 def run_campaign(components, max_battles=10):
     """
-    运行征战任务
+    征战任务（已移除）
     
     Args:
         components: 组件字典
         max_battles: 最大战斗次数
     """
-    print(f"开始征战任务（最大{max_battles}次）...")
-    
-    controller = components['controller']
-    
-    # 启动游戏
-    if not controller.is_game_running():
-        print("启动游戏...")
-        controller.start_game()
-    
-    # 运行征战
-    success = controller.auto_campaign(max_battles)
-    
-    if success:
-        print("征战完成！")
-    else:
-        print("征战遇到问题，请检查")
-    
-    return success
+    print("征战任务已被移除，请使用每日挂机奖励任务")
+    return False
 
 
 def run_with_scheduler(components):
@@ -151,8 +151,8 @@ def run_with_scheduler(components):
     task_manager = components['task_manager']
     task_scheduler = components['task_scheduler']
     
-    # 创建日常任务
-    daily = DailyTask(task_manager)
+    # 创建每日挂机奖励任务
+    daily_idle = DailyIdleRewardTaskBuilder(task_manager)
     
     # 设置每日任务（早上8点和晚上8点）
     morning_time = datetime.now().replace(hour=8, minute=0, second=0)
@@ -166,10 +166,10 @@ def run_with_scheduler(components):
         evening_time = evening_time.replace(day=evening_time.day + 1)
     
     # 创建定时任务
-    morning_task = daily.create(scheduled_time=morning_time)
-    evening_task = daily.create(scheduled_time=evening_time)
+    morning_task = daily_idle.create(scheduled_time=morning_time)
+    evening_task = daily_idle.create(scheduled_time=evening_time)
     
-    print(f"已设置定时任务：")
+    print(f"已设置定时任务（每日挂机奖励）：")
     print(f"  早上: {morning_time.strftime('%Y-%m-%d %H:%M')}")
     print(f"  晚上: {evening_time.strftime('%Y-%m-%d %H:%M')}")
     
@@ -244,7 +244,7 @@ def test_connection(components):
 def main():
     """主函数"""
     parser = argparse.ArgumentParser(description='AFK2自动化脚本')
-    parser.add_argument('--mode', choices=['daily', 'campaign', 'scheduler', 'test', 'gui'],
+    parser.add_argument('--mode', choices=['daily', 'idle_reward', 'scheduler', 'test', 'gui'],
                        default='gui', help='运行模式 (默认: gui)')
     parser.add_argument('--battles', type=int, default=10,
                        help='征战最大战斗次数')
@@ -301,13 +301,9 @@ def main():
             # 测试连接
             test_connection(components)
             
-        elif args.mode == 'daily':
-            # 运行日常任务
-            run_daily_tasks(components)
-            
-        elif args.mode == 'campaign':
-            # 运行征战
-            run_campaign(components, args.battles)
+        elif args.mode == 'daily' or args.mode == 'idle_reward':
+            # 运行每日挂机奖励任务
+            run_daily_idle_reward(components)
             
         elif args.mode == 'scheduler':
             # 使用调度器

@@ -48,18 +48,49 @@ class OCREngine(LoggerMixin):
     提供文字识别功能
     """
     
-    def __init__(self, config: Optional[OCRConfig] = None):
+    def __init__(self, config: Optional[OCRConfig] = None, preload: bool = False):
         """
         初始化OCR引擎
         
         Args:
             config: OCR配置
+            preload: 是否预加载引擎（启动时立即初始化）
         """
         self.config = config or OCRConfig()
         self._paddleocr = None
         self._engine_initialized = False
         
         self.logger.info(f"OCREngine created with PaddleOCR, lang: {self.config.lang}")
+        
+        # 如果设置了预加载，立即初始化引擎
+        if preload:
+            self.logger.info("预加载OCR引擎...")
+            self.preload()
+    
+    def preload(self) -> bool:
+        """
+        预加载OCR引擎
+        在应用启动时调用，避免首次使用时的延迟
+        
+        Returns:
+            是否预加载成功
+        """
+        try:
+            self._ensure_engine_initialized()
+            
+            # 执行一次空识别来完全加载模型
+            import numpy as np
+            dummy_image = np.ones((100, 100, 3), dtype=np.uint8) * 255
+            try:
+                self._paddleocr.ocr(dummy_image)
+            except:
+                pass  # 忽略空图像的识别错误
+            
+            self.logger.info("OCR引擎预加载完成")
+            return True
+        except Exception as e:
+            self.logger.error(f"OCR引擎预加载失败: {e}")
+            return False
     
     def _ensure_engine_initialized(self) -> None:
         """确保OCR引擎已初始化（延迟初始化）"""

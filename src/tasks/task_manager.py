@@ -87,7 +87,8 @@ class TaskManager(LoggerMixin):
                    scheduled_time: Optional[datetime] = None,
                    timeout: Optional[int] = None,
                    max_retries: int = 3,
-                   dependencies: Optional[List[str]] = None) -> str:
+                   dependencies: Optional[List[str]] = None,
+                   metadata: Optional[Dict[str, Any]] = None) -> str:
         """
         创建新任务
         
@@ -101,6 +102,7 @@ class TaskManager(LoggerMixin):
             timeout: 超时时间（秒）
             max_retries: 最大重试次数
             dependencies: 依赖任务ID列表
+            metadata: 额外的元数据
         
         Returns:
             任务ID
@@ -131,6 +133,10 @@ class TaskManager(LoggerMixin):
             task.metadata['group'] = group
             task.metadata['scheduled_time'] = scheduled_time
             task.metadata['timeout'] = timeout
+            
+            # 合并传入的metadata
+            if metadata:
+                task.metadata.update(metadata)
             
             # 存储任务
             self._tasks[task.task_id] = task

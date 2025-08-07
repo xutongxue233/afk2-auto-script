@@ -117,10 +117,15 @@ class LogWidget(QWidget, LoggerMixin):
         # 创建日志处理器
         self.log_handler = LogHandler(self)
         self.log_handler.setFormatter(
-            logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+            logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', 
+                            datefmt='%H:%M:%S')
         )
         
-        # 添加到根logger
+        # 添加到主应用logger (AFK2Auto)
+        app_logger = logging.getLogger('AFK2Auto')
+        app_logger.addHandler(self.log_handler)
+        
+        # 同时添加到根logger以捕获所有日志
         root_logger = logging.getLogger()
         root_logger.addHandler(self.log_handler)
         
@@ -223,6 +228,10 @@ class LogWidget(QWidget, LoggerMixin):
     def closeEvent(self, event):
         """关闭事件"""
         # 移除日志处理器
+        app_logger = logging.getLogger('AFK2Auto')
+        app_logger.removeHandler(self.log_handler)
+        
         root_logger = logging.getLogger()
         root_logger.removeHandler(self.log_handler)
+        
         event.accept()

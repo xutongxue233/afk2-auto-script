@@ -72,6 +72,12 @@ class TaskExecutor(LoggerMixin):
             
             self.logger.info(f"Executing task: {task.task_name} ({task.task_id})")
             
+            # 检查是否需要唤醒游戏（排除系统任务和唤醒游戏任务本身）
+            if task_type not in ['system', 'wake_game'] and hasattr(task, 'metadata'):
+                should_wake = task.metadata.get('wake_game', True)  # 默认为True
+                if should_wake:
+                    self._ensure_game_running()
+            
             # 设置超时
             timeout = task.metadata.get('timeout') if hasattr(task, 'metadata') else None
             if timeout:
@@ -139,23 +145,9 @@ class TaskExecutor(LoggerMixin):
     def _register_builtin_executors(self) -> None:
         """注册内置执行器"""
         
-        # 日常任务执行器
-        self.register_executor('daily_tasks', self._execute_daily_tasks)
-        
-        # 征战任务执行器
-        self.register_executor('campaign', self._execute_campaign)
-        
-        # 收集奖励执行器
-        self.register_executor('collect_rewards', self._execute_collect_rewards)
-        
-        # 英雄升级执行器
-        self.register_executor('hero_upgrade', self._execute_hero_upgrade)
-        
-        # 公会任务执行器
-        self.register_executor('guild_tasks', self._execute_guild_tasks)
-        
-        # 自定义脚本执行器
-        self.register_executor('custom_script', self._execute_custom_script)
+        # 唤醒游戏任务执行器
+        self.register_executor('wake_game', self._execute_wake_game)
+        self.register_executor('system', self._execute_wake_game)  # 系统任务也使用同样的执行器
         
         # 每日挂机奖励执行器
         self.register_executor('daily_idle_reward', self._execute_daily_idle_reward)
@@ -226,155 +218,6 @@ class TaskExecutor(LoggerMixin):
         stats['avg_duration'] = stats['total_duration'] / stats['total']
     
     # ========== 内置执行器实现 ==========
-    
-    def _execute_daily_tasks(self, task: TaskInfo, context: Dict[str, Any]) -> Dict[str, bool]:
-        """
-        执行日常任务
-        
-        Args:
-            task: 任务信息
-            context: 执行上下文
-        
-        Returns:
-            任务执行结果
-        """
-        if not self.game_controller:
-            raise TaskExecutionError("Game controller not available")
-        
-        # 确保游戏运行
-        if not self.game_controller.is_game_running():
-            self.game_controller.start_game()
-        
-        # 执行日常任务
-        results = self.game_controller.perform_daily_tasks()
-        
-        self.logger.info(f"Daily tasks completed: {results}")
-        return results
-    
-    def _execute_campaign(self, task: TaskInfo, context: Dict[str, Any]) -> bool:
-        """
-        执行征战任务
-        
-        Args:
-            task: 任务信息
-            context: 执行上下文
-        
-        Returns:
-            是否成功
-        """
-        if not self.game_controller:
-            raise TaskExecutionError("Game controller not available")
-        
-        # 获取参数
-        params = task.metadata.get('params', {}) if hasattr(task, 'metadata') else task.params
-        max_battles = params.get('max_battles', 10)
-        
-        # 执行征战
-        result = self.game_controller.auto_campaign(max_battles)
-        
-        return result
-    
-    def _execute_collect_rewards(self, task: TaskInfo, context: Dict[str, Any]) -> bool:
-        """
-        执行收集奖励任务
-        
-        Args:
-            task: 任务信息
-            context: 执行上下文
-        
-        Returns:
-            是否成功
-        """
-        if not self.game_controller:
-            raise TaskExecutionError("Game controller not available")
-        
-        # 收集各种奖励
-        results = {
-            'idle': self.game_controller.collect_idle_rewards(),
-            'mail': self.game_controller.collect_mail(),
-            'quest': self.game_controller.collect_quest_rewards()
-        }
-        
-        self.logger.info(f"Rewards collected: {results}")
-        return all(results.values())
-    
-    def _execute_hero_upgrade(self, task: TaskInfo, context: Dict[str, Any]) -> bool:
-        """
-        执行英雄升级任务
-        
-        Args:
-            task: 任务信息
-            context: 执行上下文
-        
-        Returns:
-            是否成功
-        """
-        if not self.game_controller:
-            raise TaskExecutionError("Game controller not available")
-        
-        # 执行英雄升级
-        result = self.game_controller.upgrade_heroes()
-        
-        return result
-    
-    def _execute_guild_tasks(self, task: TaskInfo, context: Dict[str, Any]) -> bool:
-        """
-        执行公会任务
-        
-        Args:
-            task: 任务信息
-            context: 执行上下文
-        
-        Returns:
-            是否成功
-        """
-        if not self.game_controller:
-            raise TaskExecutionError("Game controller not available")
-        
-        # 公会签到
-        result = self.game_controller.guild_checkin()
-        
-        # TODO: 添加其他公会任务
-        
-        return result
-    
-    def _execute_custom_script(self, task: TaskInfo, context: Dict[str, Any]) -> Any:
-        """
-        执行自定义脚本
-        
-        Args:
-            task: 任务信息
-            context: 执行上下文
-        
-        Returns:
-            脚本执行结果
-        """
-        params = task.metadata.get('params', {}) if hasattr(task, 'metadata') else task.params
-        script_path = params.get('script_path')
-        script_code = params.get('script_code')
-        
-        if script_path:
-            # 执行脚本文件
-            with open(script_path, 'r', encoding='utf-8') as f:
-                script_code = f.read()
-        
-        if not script_code:
-            raise TaskExecutionError("No script provided")
-        
-        # 准备执行环境
-        exec_globals = {
-            'game_controller': self.game_controller,
-            'context': context,
-            'task': task,
-            'logger': self.logger
-        }
-        
-        # 执行脚本
-        exec_locals = {}
-        exec(script_code, exec_globals, exec_locals)
-        
-        # 返回结果
-        return exec_locals.get('result', True)
     
     def _execute_daily_idle_reward(self, task: TaskInfo, context: Dict[str, Any]) -> bool:
         """
@@ -455,3 +298,104 @@ class TaskExecutor(LoggerMixin):
         except Exception as e:
             self.logger.error(f"Daily idle reward task failed: {e}")
             raise TaskExecutionError(f"Daily idle reward task execution failed: {e}")
+    
+    def _execute_wake_game(self, task: TaskInfo, context: Dict[str, Any]) -> bool:
+        """
+        执行唤醒游戏任务
+        
+        Args:
+            task: 任务信息
+            context: 执行上下文
+        
+        Returns:
+            是否成功
+        """
+        if not self.game_controller:
+            raise TaskExecutionError("Game controller not available")
+        
+        # 导入唤醒游戏任务
+        from src.tasks.wake_game_task import WakeGameTask
+        
+        # 获取参数
+        params = task.metadata.get('params', {}) if hasattr(task, 'metadata') else {}
+        wait_for_main = params.get('wait_for_main', True)
+        startup_timeout = params.get('startup_timeout', 30.0)
+        
+        # 创建唤醒任务实例
+        wake_task = WakeGameTask(
+            wait_for_main=wait_for_main,
+            startup_timeout=startup_timeout
+        )
+        
+        # 执行唤醒任务
+        result = wake_task.execute(self.game_controller)
+        
+        if result:
+            self.logger.info("Game wake task completed successfully")
+        else:
+            self.logger.warning("Game wake task failed")
+        
+        return result
+    
+    def execute_task(self, task) -> bool:
+        """
+        执行任务对象（兼容旧接口）
+        
+        Args:
+            task: 任务对象（具有execute方法）
+        
+        Returns:
+            是否成功
+        """
+        if hasattr(task, 'execute'):
+            # 如果任务有execute方法，直接调用
+            if self.game_controller:
+                return task.execute(self.game_controller)
+            else:
+                raise TaskExecutionError("Game controller not available")
+        else:
+            # 否则使用原有的execute方法
+            return self.execute(task)
+    
+    def _ensure_game_running(self) -> bool:
+        """
+        确保游戏正在运行
+        
+        Returns:
+            游戏是否成功运行
+        """
+        if not self.game_controller:
+            raise TaskExecutionError("Game controller not available")
+        
+        try:
+            # 检查游戏是否已运行
+            if self.game_controller.is_game_running():
+                self.logger.info("Game is already running")
+                return True
+            
+            self.logger.info("Game is not running, starting game...")
+            
+            # 导入唤醒游戏任务
+            from src.tasks.wake_game_task import WakeGameTask
+            
+            # 创建唤醒任务
+            wake_task = WakeGameTask(
+                name="Auto wake game",
+                wait_for_main=True,
+                startup_timeout=30.0
+            )
+            
+            # 执行唤醒任务
+            result = wake_task.execute(self.game_controller)
+            
+            if result:
+                self.logger.info("Game started successfully")
+            else:
+                self.logger.error("Failed to start game")
+                raise TaskExecutionError("Failed to start game")
+            
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"Error ensuring game is running: {e}")
+            raise TaskExecutionError(f"Failed to ensure game is running: {e}")

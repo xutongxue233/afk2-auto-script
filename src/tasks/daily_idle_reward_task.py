@@ -6,6 +6,8 @@
 import time
 import os
 from typing import Optional, Tuple
+from PIL import Image, ImageDraw, ImageFont
+from datetime import datetime
 from src.services.log_service import LoggerMixin
 from src.recognition.image_recognizer import ImageRecognizer
 from src.recognition.ocr_engine import OCREngine
@@ -15,12 +17,12 @@ from src.services.adb_service import ADBService
 class DailyIdleRewardTask(LoggerMixin):
     """
     每日挂机奖励领取任务
-    
-    任务流程：
-    1. 检查是否在托管中状态，如果是则点击退出托管
-    2. 寻找并点击"收获奖励"按钮
-    3. 如果没有找到收获奖励，寻找沙漏图标并点击屏幕中间位置
-    4. 再次尝试收获奖励
+
+    任务流程逻辑：
+        1.找到 托管中/当前进度/托管完成 三个其中一个的坐标中心点，点击
+        2.判断是否弹出 收获奖励 按钮，如果有则点击，任务完成
+        3.如果没有弹出 收获奖励 按钮，点击屏幕50%，80%的位置，然后识别 收获奖励 按钮点击，任务完成
+
     """
     
     def __init__(self, adb_service: ADBService, image_recognizer: ImageRecognizer, ocr_engine: Optional[OCREngine] = None):
@@ -45,10 +47,11 @@ class DailyIdleRewardTask(LoggerMixin):
         
         # 定义图片路径
         self.images = {
-            'idle_mode': os.path.join(self.image_dir, 'idle_mode.png'),
+            'idle_mode': os.path.join(self.image_dir, 'idle_mode.png'),  # 托管中
             'collect_reward': os.path.join(self.image_dir, 'collect_reward.png'),
             'hourglass': os.path.join(self.image_dir, 'hourglass.png'),
-            'current_progress': os.path.join(self.image_dir, 'current_progress.png')
+            'current_progress': os.path.join(self.image_dir, 'current_progress.png'),  # 当前进度
+            'idle_completed': os.path.join(self.image_dir, 'idle_completed.png')  # 托管完成
         }
         
         # 验证图片文件是否存在
@@ -65,6 +68,11 @@ class DailyIdleRewardTask(LoggerMixin):
         """
         执行领取挂机奖励任务
         
+        根据任务流程逻辑：
+        1. 找到 托管中/当前进度/托管完成 三个其中一个的坐标中心点，点击
+        2. 判断是否弹出 收获奖励 按钮，如果有则点击，任务完成
+        3. 如果没有弹出 收获奖励 按钮，点击屏幕50%，80%的位置，然后识别 收获奖励 按钮点击
+        
         Args:
             device_id: 设备ID，如果为None则使用默认设备
         
@@ -72,225 +80,184 @@ class DailyIdleRewardTask(LoggerMixin):
             任务是否成功完成
         """
         try:
-            self.logger.info("Starting daily idle reward collection task")
+            self.logger.info("开始执行每日挂机奖励领取任务")
             
             # 确保设备连接
             if device_id:
                 self.adb_service.select_device(device_id)
             
             if not self.adb_service.is_connected():
-                self.logger.error("Device not connected")
+                self.logger.error("设备未连接")
                 return False
             
-            # 步骤1：检查是否在托管中
-            if self._check_and_exit_idle_mode():
-                self.logger.info("Exited idle mode")
-                time.sleep(2)  # 等待界面切换
+            # 步骤1：找到并点击 托管中/当前进度/托管完成 图标
+            clicked_icon = self._find_and_click_idle_icon()
+            if not clicked_icon:
+                self.logger.warning("未找到任何挂机相关图标")
+                return False
             
-            # 步骤2：尝试直接收获奖励
-            if self._try_collect_reward():
-                self.logger.info("Successfully collected reward directly")
+            self.logger.info(f"已点击 {clicked_icon} 图标")
+            
+            # 等待界面响应
+            time.sleep(2)
+            
+            # 步骤2：尝试查找并点击 收获奖励 按钮
+            if self._find_and_click_collect_reward():
+                self.logger.info("成功点击收获奖励按钮，任务完成")
                 return True
             
-            # 步骤3：如果没有找到收获奖励，寻找沙漏
-            if self._click_hourglass():
-                self.logger.info("Clicked hourglass, attempting to collect reward")
-                time.sleep(2)  # 等待界面更新
-                
-                # 步骤4：再次尝试收获奖励
-                if self._try_collect_reward():
-                    self.logger.info("Successfully collected reward after clicking hourglass")
-                    return True
+            # 步骤3：如果没有找到收获奖励按钮，点击屏幕中间位置后再次尝试
+            self.logger.info("未找到收获奖励按钮，尝试点击屏幕中间位置")
+            self._click_screen_center()
             
-            # 如果所有步骤都失败
-            self.logger.error("Failed to collect idle reward: no valid targets found")
+            # 等待界面响应
+            time.sleep(2)
+            
+            # 再次尝试查找并点击收获奖励按钮
+            if self._find_and_click_collect_reward():
+                self.logger.info("成功点击收获奖励按钮，任务完成")
+                return True
+            
+            self.logger.warning("未能成功领取挂机奖励")
             return False
             
         except Exception as e:
-            self.logger.error(f"Task execution failed: {e}")
+            self.logger.error(f"任务执行失败: {e}")
             return False
     
-    def _check_and_exit_idle_mode(self) -> bool:
+    def _find_and_click_idle_icon(self) -> Optional[str]:
         """
-        检查是否在托管模式并退出，或检查当前进度
+        查找并点击挂机相关图标（托管中/当前进度/托管完成）
         
         Returns:
-            是否找到并点击了托管中/当前进度图标
+            点击的图标名称，如果没有找到则返回 None
         """
         try:
             # 截图
             screenshot = self.adb_service.take_screenshot()
             if screenshot is None:
                 self.logger.error("Failed to take screenshot")
-                return False
-            
+                return None
             
             # 裁剪底部30%区域进行识别
             width, height = screenshot.size
             bottom_region = (0, int(height * 0.7), width, height)  # 底部30%区域
             
-            # 优先检查托管中图标
-            result = self.image_recognizer.find_template(
-                screenshot,
-                'idle_mode',
-                threshold=0.65,
-                region=bottom_region,
-                use_grayscale=True
-            )
+            # 定义要查找的图标列表（优先级顺序）
+            icons_to_check = [
+                ('idle_completed', '托管完成'),
+                ('idle_mode', '托管中'),
+                ('current_progress', '当前进度')
+            ]
             
-            if result:
-                # result.center已经是绝对坐标（包含region偏移）
-                x, y = result.center
-                self.logger.info(f"Found idle mode icon at ({x}, {y}) with confidence {result.confidence:.2f}")
+            # 依次查找图标
+            for icon_key, icon_name in icons_to_check:
+                result = self.image_recognizer.find_template(
+                    screenshot,
+                    icon_key,
+                    threshold=0.7,
+                    region=bottom_region,
+                    use_grayscale=True
+                )
                 
-                # 验证位置是否合理（应该在屏幕左下角）
-                screen_info = f"Screen size: {width}x{height}"
-                position_info = f"Found position: x={x} (left={x < width//2}), y={y} (bottom={y > height//2})"
-                region_info = f"Search region: {bottom_region} (bottom 30%)"
-                relative_pos = f"Relative to region: x={x}, y={y - int(height * 0.7)} (within region)"
-                
-                self.logger.info(screen_info)
-                self.logger.info(position_info)
-                self.logger.info(region_info)
-                self.logger.info(relative_pos)
-                
-                # 检查位置是否合理
-                is_left_side = x < width // 2
-                is_bottom_area = y > height * 0.7
-                
-                self.logger.info(f"Position analysis: left_side={is_left_side}, bottom_area={is_bottom_area}")
-                
-                if not is_left_side:
-                    self.logger.warning(f"❌ Icon found on RIGHT side (x={x}/{width}), expected LEFT side")
-                else:
-                    self.logger.info(f"✅ Icon correctly found on LEFT side (x={x}/{width})")
+                if result:
+                    x, y = result.center
+                    self.logger.info(f"找到 {icon_name} 图标，位置: ({x}, {y})，置信度: {result.confidence:.2f}")
                     
-                if not is_bottom_area:
-                    self.logger.warning(f"❌ Icon found in UPPER area (y={y}/{height}), expected BOTTOM area")
-                else:
-                    self.logger.info(f"✅ Icon correctly found in BOTTOM area (y={y}/{height})")
-                
-                # 如果位置不正确，可能是误识别
-                if not is_left_side or not is_bottom_area:
-                    self.logger.error(f"🚫 Recognition position seems incorrect! Expected: left-bottom, Found: {'right' if not is_left_side else 'left'}-{'top' if not is_bottom_area else 'bottom'}")
-                    
-                    # 尝试降低阈值或使用不同的识别策略
-                    self.logger.info("Trying alternative recognition with lower threshold...")
-                    alternative_result = self.image_recognizer.find_template(
-                        screenshot,
-                        'idle_mode',
-                        threshold=0.4,  # 降低阈值
-                        region=(0, int(height * 0.8), width // 2, height),  # 只在左下角区域搜索
-                        use_grayscale=True
-                    )
-                    
-                    if alternative_result:
-                        alt_x, alt_y = alternative_result.center
-                        self.logger.info(f"🔄 Alternative recognition found at ({alt_x}, {alt_y}) with confidence {alternative_result.confidence:.3f}")
-                        
-                        # 检查新位置是否更合理
-                        alt_is_left = alt_x < width // 2
-                        alt_is_bottom = alt_y > height * 0.8
-                        
-                        if alt_is_left and alt_is_bottom:
-                            self.logger.info("✅ Alternative position is more reasonable, using it instead")
-                            x, y = alt_x, alt_y
-                            result = alternative_result
-                        else:
-                            self.logger.warning("❌ Alternative position is also not ideal")
-                    else:
-                        self.logger.warning("⚠️ No alternative recognition found in left-bottom area")
-                
-                
-                # 尝试多种点击策略
-                for attempt in range(3):
-                    self.logger.info(f"Attempting to tap idle mode icon at ({x}, {y}) - attempt {attempt + 1}")
-                    
-                    # 尝试点击中心位置
+                    # 点击图标
                     self.adb_service.tap(x, y)
-                    self.logger.info(f"Tap command executed at ({x}, {y})")
+                    self.logger.info(f"已点击 {icon_name} 图标")
                     
-                    # 等待响应
-                    time.sleep(2)
-                    
-                    # 验证点击是否成功（检查图标是否还在）
-                    verify_screenshot = self.adb_service.take_screenshot()
-                    if verify_screenshot:
-                        verify_result = self.image_recognizer.find_template(
-                            verify_screenshot,
-                            'idle_mode',
-                            threshold=0.6,
-                            region=bottom_region,
-                            use_grayscale=True
-                        )
-                        
-                        if not verify_result:
-                            self.logger.info(f"Successfully tapped idle mode icon - icon disappeared after attempt {attempt + 1}")
-                            return True
-                        else:
-                            self.logger.warning(f"Idle mode icon still present after attempt {attempt + 1}")
-                    
-                    # 如果第一次失败，尝试稍微偏移的位置
-                    if attempt < 2:
-                        # 尝试点击稍微上方的位置
-                        offset_y = y - 10
-                        self.logger.info(f"Trying offset position ({x}, {offset_y})")
-                        self.adb_service.tap(x, offset_y)
-                        time.sleep(1)
-                
-                self.logger.warning("Failed to tap idle mode icon after 3 attempts")
-                return True  # 继续执行后续步骤
+                    return icon_name
             
-            # 如果没有找到"托管中"，检查"当前进度"
-            result = self.image_recognizer.find_template(
-                screenshot,
-                'current_progress',
-                threshold=0.6,
-                region=bottom_region,
-                use_grayscale=True
-            )
-            
-            if result:
-                x, y = result.center
-                self.logger.info(f"Found current progress at ({x}, {y}) with confidence {result.confidence:.2f}")
-                
-                # 点击当前进度查看详情
-                self.logger.info(f"Attempting to tap current progress at ({x}, {y})")
-                self.adb_service.tap(x, y)
-                self.logger.info(f"Tap command executed at ({x}, {y})")
-                
-                # 等待界面响应
-                time.sleep(1)
-                
-                return True
-            else:
-                self.logger.info("Neither idle mode nor current progress found, continuing...")
+            self.logger.info("未找到任何挂机相关图标")
+            return None
                 
         except Exception as e:
             self.logger.error(f"Error checking idle mode: {e}")
-        
-        return False
+            return None
     
-    def _try_collect_reward(self) -> bool:
+    def _save_click_screenshot(self, screenshot: Image.Image, click_x: int, click_y: int, label: str = "click") -> None:
         """
-        尝试收获奖励
+        保存带点击位置标记的截图
+        
+        Args:
+            screenshot: 原始截图
+            click_x: 点击X坐标
+            click_y: 点击Y坐标
+            label: 标签说明
+        """
+        try:
+            # 创建截图副本用于标记
+            marked_image = screenshot.copy()
+            draw = ImageDraw.Draw(marked_image)
+            
+            # 画十字准星标记点击位置
+            cross_size = 50
+            line_width = 3
+            # 水平线
+            draw.line([(click_x - cross_size, click_y), (click_x + cross_size, click_y)], 
+                     fill='red', width=line_width)
+            # 垂直线
+            draw.line([(click_x, click_y - cross_size), (click_x, click_y + cross_size)], 
+                     fill='red', width=line_width)
+            
+            # 画圆圈
+            circle_radius = 30
+            draw.ellipse([(click_x - circle_radius, click_y - circle_radius),
+                         (click_x + circle_radius, click_y + circle_radius)],
+                        outline='red', width=line_width)
+            
+            # 添加文字标注
+            text = f"{label}: ({click_x}, {click_y})"
+            # 计算文字位置（在点击位置上方）
+            text_y = click_y - circle_radius - 40 if click_y > 100 else click_y + circle_radius + 10
+            
+            # 绘制文字背景
+            bbox = [click_x - 100, text_y - 5, click_x + 100, text_y + 25]
+            draw.rectangle(bbox, fill='white', outline='red', width=2)
+            
+            # 绘制文字（简单文字，不使用字体）
+            draw.text((click_x - 95, text_y), text, fill='red')
+            
+            # 创建debug目录
+            debug_dir = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                'debug', 'clicks'
+            )
+            os.makedirs(debug_dir, exist_ok=True)
+            
+            # 生成文件名
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"{label}_{timestamp}_{click_x}_{click_y}.png"
+            filepath = os.path.join(debug_dir, filename)
+            
+            # 保存图片
+            marked_image.save(filepath)
+            self.logger.info(f"Saved click screenshot to: {filepath}")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to save click screenshot: {e}")
+    
+    def _find_and_click_collect_reward(self) -> bool:
+        """
+        查找并点击收获奖励按钮
         
         Returns:
-            是否成功找到并点击收获奖励
+            是否成功找到并点击收获奖励按钮
         """
         try:
             # 截图
             screenshot = self.adb_service.take_screenshot()
             if screenshot is None:
-                self.logger.error("Failed to take screenshot for reward collection")
+                self.logger.error("截图失败")
                 return False
-            
             
             # 裁剪底部30%区域进行识别
             width, height = screenshot.size
             bottom_region = (0, int(height * 0.7), width, height)  # 底部30%区域
             
-            # 方法1：通过图片识别
+            # 通过图片模板匹配查找收获奖励按钮
             result = self.image_recognizer.find_template(
                 screenshot,
                 'collect_reward',
@@ -300,77 +267,48 @@ class DailyIdleRewardTask(LoggerMixin):
             
             if result:
                 x, y = result.center
-                self.logger.info(f"Found collect reward button (image) at ({x}, {y}) with confidence {result.confidence:.2f}")
+                self.logger.info(f"找到收获奖励按钮，位置: ({x}, {y})，置信度: {result.confidence:.2f}")
                 self.adb_service.tap(x, y)
                 return True
-            else:
-                self.logger.info("Collect reward button not found with image recognition")
             
-            # 方法2：通过文字识别（如果有OCR引擎）
+            # 如果有OCR引擎，尝试通过文字识别
             if self.ocr_engine:
-                self.logger.info("Trying OCR text recognition for reward collection")
-                text_results = self.ocr_engine.recognize_with_details(screenshot)
-                self.logger.info(f"OCR found {len(text_results)} text regions")
-                for text_item in text_results:
-                    self.logger.debug(f"OCR text: '{text_item.text}' at {text_item.position}")
-                    if '收获奖励' in text_item.text or '收集' in text_item.text or '领取' in text_item.text:
-                        x, y = text_item.position
-                        self.logger.info(f"Found collect reward text at ({x}, {y}): {text_item.text}")
-                        self.adb_service.tap(x, y)
+                self.logger.info("尝试通过OCR识别收获奖励按钮")
+                ocr_results = self.ocr_engine.recognize(screenshot)
+                for text, bbox in ocr_results:
+                    if "收获" in text or "奖励" in text or "领取" in text:
+                        # 计算文字中心点
+                        center_x = (bbox[0] + bbox[2]) // 2
+                        center_y = (bbox[1] + bbox[3]) // 2
+                        self.logger.info(f"通过OCR找到相关文字 '{text}'，位置: ({center_x}, {center_y})")
+                        self.adb_service.tap(center_x, center_y)
                         return True
-            else:
-                self.logger.info("No OCR engine available for text recognition")
+            
+            self.logger.info("未找到收获奖励按钮")
+            return False
             
         except Exception as e:
-            self.logger.error(f"Error trying to collect reward: {e}")
-        
-        return False
+            self.logger.error(f"查找收获奖励按钮时出错: {e}")
+            return False
     
-    def _click_hourglass(self) -> bool:
+    def _click_screen_center(self) -> None:
         """
-        寻找沙漏图标并点击屏幕中间位置
-        
-        Returns:
-            是否成功找到沙漏并执行点击
+        点击屏幕中间偏下位置（50%, 80%）
         """
         try:
-            # 截图
-            screenshot = self.adb_service.take_screenshot()
-            if screenshot is None:
-                self.logger.error("Failed to take screenshot for hourglass detection")
-                return False
+            # 获取屏幕尺寸
+            screen_width, screen_height = self._get_screen_size()
             
+            # 计算点击位置（水平50%，垂直80%）
+            click_x = screen_width // 2
+            click_y = int(screen_height * 0.8)
             
-            # 裁剪底部30%区域进行识别
-            width, height = screenshot.size
-            bottom_region = (0, int(height * 0.7), width, height)  # 底部30%区域
+            self.logger.info(f"点击屏幕中间位置: ({click_x}, {click_y})")
+            self.adb_service.tap(click_x, click_y)
             
-            # 识别沙漏图标
-            result = self.image_recognizer.find_template(
-                screenshot,
-                'hourglass',
-                threshold=0.6,
-                region=bottom_region
-            )
-            
-            if result:
-                _, y = result.center
-                
-                # 获取屏幕尺寸
-                screen_width, screen_height = self._get_screen_size()
-                
-                # 点击屏幕中间位置（x坐标），保持y坐标不变
-                x = screen_width // 2
-                self.logger.info(f"Found hourglass at confidence {result.confidence:.2f}, clicking at ({x}, {y})")
-                self.adb_service.tap(x, y)
-                return True
-            else:
-                self.logger.info("Hourglass icon not found")
-                
         except Exception as e:
-            self.logger.error(f"Error clicking hourglass: {e}")
-        
-        return False
+            self.logger.error(f"点击屏幕中间位置时出错: {e}")
+    
     
     def _get_screen_size(self) -> Tuple[int, int]:
         """

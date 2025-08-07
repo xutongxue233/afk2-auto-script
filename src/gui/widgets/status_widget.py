@@ -47,16 +47,6 @@ class StatusWidget(QWidget):
         
         layout.addWidget(self._create_separator())
         
-        # 游戏状态
-        self.game_icon = QLabel("🎮")
-        layout.addWidget(self.game_icon)
-        
-        self.game_label = QLabel("游戏: 未运行")
-        self.game_label.setMinimumWidth(120)
-        layout.addWidget(self.game_label)
-        
-        layout.addWidget(self._create_separator())
-        
         # 任务状态
         self.task_icon = QLabel("📋")
         layout.addWidget(self.task_icon)
@@ -119,22 +109,6 @@ class StatusWidget(QWidget):
             self.device_label.setText("设备: 未连接")
             self.device_label.setStyleSheet("color: red;")
     
-    def update_game_status(self, running: bool, package: Optional[str] = None):
-        """
-        更新游戏状态
-        
-        Args:
-            running: 是否运行
-            package: 包名
-        """
-        if running:
-            self.game_icon.setText("🎮")
-            self.game_label.setText("游戏: 运行中")
-            self.game_label.setStyleSheet("color: green;")
-        else:
-            self.game_icon.setText("🎯")
-            self.game_label.setText("游戏: 未运行")
-            self.game_label.setStyleSheet("color: gray;")
     
     def update_task_status(self, running: int, total: int):
         """
@@ -154,14 +128,12 @@ class StatusWidget(QWidget):
             self.task_label.setStyleSheet("color: gray;")
     
     def update_status(self, device_status: Optional[str] = None,
-                     game_status: Optional[str] = None,
                      task_status: Optional[str] = None):
         """
         批量更新状态
         
         Args:
             device_status: 设备状态文本
-            game_status: 游戏状态文本
             task_status: 任务状态文本
         """
         if device_status:
@@ -172,15 +144,6 @@ class StatusWidget(QWidget):
                 self.device_icon.setText("📵")
                 self.device_label.setStyleSheet("color: red;")
             self.device_label.setText(f"设备: {device_status}")
-        
-        if game_status:
-            if "运行" in game_status:
-                self.game_icon.setText("🎮")
-                self.game_label.setStyleSheet("color: green;")
-            else:
-                self.game_icon.setText("🎯")
-                self.game_label.setStyleSheet("color: gray;")
-            self.game_label.setText(f"游戏: {game_status}")
         
         if task_status:
             self.task_label.setText(task_status)
@@ -232,7 +195,6 @@ class StatusWidget(QWidget):
     def reset(self):
         """重置状态"""
         self.update_device_status(False)
-        self.update_game_status(False)
         self.update_task_status(0, 0)
         self.hide_progress()
         self.message_label.setText("")

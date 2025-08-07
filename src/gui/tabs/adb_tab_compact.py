@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
     QPushButton, QLabel, QLineEdit,
     QTableWidget, QTableWidgetItem, QHeaderView,
-    QMessageBox, QTextEdit, QGridLayout
+    QMessageBox
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt6.QtGui import QFont
@@ -42,30 +42,28 @@ class DeviceScanThread(QThread):
             self.devices_found.emit([])
 
 
-class WakeGameThread(QThread):
-    """唤醒游戏线程"""
-    finished_signal = pyqtSignal(bool, str)  # (success, message)
-    progress_signal = pyqtSignal(str)  # 进度信息
+
+
+class DeviceConnectThread(QThread):
+    """设备连接线程"""
+    connection_finished = pyqtSignal(bool, str, object)  # (success, message, device)
     
-    def __init__(self, adb_service: ADBService):
+    def __init__(self, adb_service: ADBService, device_id: str, device: Device):
         super().__init__()
         self.adb_service = adb_service
+        self.device_id = device_id
+        self.device = device
     
     def run(self):
-        """运行唤醒游戏"""
+        """执行连接"""
         try:
-            self.progress_signal.emit("正在唤醒设备...")
-            
-            # 执行唤醒和启动游戏
-            success = self.adb_service.wake_and_start_game()
-            
+            success = self.adb_service.connect_device(self.device_id)
             if success:
-                self.finished_signal.emit(True, "游戏已成功启动")
+                self.connection_finished.emit(True, f"已连接到设备: {self.device_id}", self.device)
             else:
-                self.finished_signal.emit(False, "无法启动游戏")
-                
+                self.connection_finished.emit(False, "设备连接失败，请检查设备状态", None)
         except Exception as e:
-            self.finished_signal.emit(False, f"启动游戏失败: {str(e)}")
+            self.connection_finished.emit(False, f"连接失败: {str(e)}", None)
 
 
 class ADBTab(QWidget, LoggerMixin):
@@ -84,21 +82,15 @@ class ADBTab(QWidget, LoggerMixin):
         self.adb_service = adb_service
         self.devices: List[Device] = []
         self.scan_thread: Optional[DeviceScanThread] = None
+        self._is_scanning = False  # 添加扫描标志
         
         self._init_ui()
         
-        # 自动扫描设备
-        self._scan_devices()
+        # 延迟初始扫描，避免初始化时的问题
+        QTimer.singleShot(500, self._scan_devices)
         
-        # 定时刷新设备列表
-        self.refresh_timer = QTimer()
-        self.refresh_timer.timeout.connect(self._scan_devices)
-        self.refresh_timer.start(5000)  # 每5秒刷新
-        
-        # 定时刷新游戏状态
-        self.game_status_timer = QTimer()
-        self.game_status_timer.timeout.connect(self._check_game_status)
-        self.game_status_timer.start(3000)  # 每3秒刷新游戏状态
+        # 移除自动刷新定时器，避免频繁扫描导致的问题
+        # 用户可以手动点击刷新按钮来扫描设备
     
     def _init_ui(self):
         """初始化UI - 紧凑版"""
@@ -130,18 +122,18 @@ class ADBTab(QWidget, LoggerMixin):
         status_layout.addWidget(self.connection_status)
         status_layout.addStretch()
         
-        # 内容区域 - 使用网格布局
+        # 内容区域 - 使用垂直布局
         content_widget = QWidget()
-        content_layout = QGridLayout(content_widget)
+        content_layout = QVBoxLayout(content_widget)
         content_layout.setSpacing(5)
         main_layout.addWidget(content_widget)
         
-        # 左上 - 设备列表
+        # 设备列表
         device_group = QGroupBox("设备列表")
         device_layout = QVBoxLayout()
         device_layout.setSpacing(3)
         device_group.setLayout(device_layout)
-        content_layout.addWidget(device_group, 0, 0)
+        content_layout.addWidget(device_group)
         
         # 设备操作按钮
         button_layout = QHBoxLayout()
@@ -178,7 +170,7 @@ class ADBTab(QWidget, LoggerMixin):
         
         self.device_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.device_table.itemSelectionChanged.connect(self._on_device_selected)
-        self.device_table.setMaximumHeight(100)  # 限制高度
+        self.device_table.setMaximumHeight(150)  # 增加高度
         self.device_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         
         # 设置紧凑的行高
@@ -187,26 +179,12 @@ class ADBTab(QWidget, LoggerMixin):
         
         device_layout.addWidget(self.device_table)
         
-        # 右上 - 设备信息
-        info_group = QGroupBox("设备信息")
-        info_layout = QVBoxLayout()
-        info_layout.setSpacing(3)
-        info_group.setLayout(info_layout)
-        content_layout.addWidget(info_group, 0, 1)
-        
-        self.device_info = QTextEdit()
-        self.device_info.setReadOnly(True)
-        self.device_info.setFont(QFont("Consolas", 8))
-        self.device_info.setPlaceholderText("选择设备后显示信息")
-        self.device_info.setMaximumHeight(100)
-        info_layout.addWidget(self.device_info)
-        
-        # 下方左 - WiFi连接
+        # WiFi连接
         wifi_group = QGroupBox("WiFi连接")
         wifi_layout = QHBoxLayout()
         wifi_layout.setSpacing(5)
         wifi_group.setLayout(wifi_layout)
-        content_layout.addWidget(wifi_group, 1, 0)
+        content_layout.addWidget(wifi_group)
         
         wifi_layout.addWidget(QLabel("IP:"))
         self.ip_input = QLineEdit()
@@ -227,41 +205,6 @@ class ADBTab(QWidget, LoggerMixin):
         
         wifi_layout.addStretch()
         
-        # 下方右 - 游戏操作
-        game_group = QGroupBox("游戏操作")
-        game_layout = QVBoxLayout()
-        game_layout.setSpacing(3)
-        game_group.setLayout(game_layout)
-        content_layout.addWidget(game_group, 1, 1)
-        
-        # 游戏操作按钮布局
-        game_btn_layout = QHBoxLayout()
-        game_btn_layout.setSpacing(3)
-        game_layout.addLayout(game_btn_layout)
-        
-        # 唤醒游戏按钮
-        self.wake_game_btn = QPushButton("唤醒游戏")
-        self.wake_game_btn.setMaximumHeight(25)
-        self.wake_game_btn.clicked.connect(self._wake_and_start_game)
-        self.wake_game_btn.setEnabled(False)
-        self.wake_game_btn.setToolTip("唤醒设备并启动剑与远征：启程")
-        game_btn_layout.addWidget(self.wake_game_btn)
-        
-        # 停止游戏按钮
-        self.stop_game_btn = QPushButton("停止游戏")
-        self.stop_game_btn.setMaximumHeight(25)
-        self.stop_game_btn.clicked.connect(self._stop_game)
-        self.stop_game_btn.setEnabled(False)
-        self.stop_game_btn.setToolTip("停止剑与远征：启程")
-        game_btn_layout.addWidget(self.stop_game_btn)
-        
-        game_btn_layout.addStretch()
-        
-        # 游戏状态标签
-        self.game_status_label = QLabel("游戏状态: 未检测")
-        self.game_status_label.setStyleSheet("QLabel { color: #666; font-size: 11px; padding: 3px; }")
-        game_layout.addWidget(self.game_status_label)
-        
         # 添加一个提示标签
         tip_label = QLabel("提示: 确保设备已开启USB调试，首次连接需在设备上授权")
         tip_label.setStyleSheet("QLabel { color: #666; font-size: 11px; padding: 5px; }")
@@ -272,31 +215,58 @@ class ADBTab(QWidget, LoggerMixin):
     
     def _scan_devices(self):
         """扫描设备"""
+        # 检查是否已有线程在运行
         if self.scan_thread and self.scan_thread.isRunning():
+            self.logger.debug("Scan thread already running, skipping")
             return
+        
+        # 清理旧线程
+        if self.scan_thread:
+            try:
+                # 断开所有信号连接
+                self.scan_thread.devices_found.disconnect()
+                self.scan_thread.error_occurred.disconnect()
+                self.scan_thread.finished.disconnect()
+            except TypeError:
+                # 信号未连接时会抛出TypeError，忽略
+                pass
+            
+            # 如果线程还在运行，等待它结束
+            if self.scan_thread.isRunning():
+                self.scan_thread.quit()
+                if not self.scan_thread.wait(1000):  # 等待1秒
+                    self.scan_thread.terminate()
+                    self.scan_thread.wait()
+            
+            # 删除旧线程对象
+            self.scan_thread.deleteLater()
+            self.scan_thread = None
         
         self.scan_btn.setEnabled(False)
         self.scan_btn.setText("扫描中...")
         
+        # 创建新线程
         self.scan_thread = DeviceScanThread(self.adb_service)
         self.scan_thread.devices_found.connect(self._on_devices_found)
         self.scan_thread.error_occurred.connect(self._on_scan_error)
-        self.scan_thread.finished.connect(lambda: self.scan_btn.setEnabled(True))
-        self.scan_thread.finished.connect(lambda: self.scan_btn.setText("刷新"))
+        # 使用单个连接处理完成事件
+        self.scan_thread.finished.connect(self._on_scan_complete)
         self.scan_thread.start()
     
     def _on_devices_found(self, devices: List[Device]):
         """设备扫描完成"""
         self.devices = devices
         self._update_device_table()
-        
-        if not devices:
-            self.device_info.setText("未发现设备")
     
     def _on_scan_error(self, error_msg: str):
         """扫描错误处理"""
         self.logger.warning(f"Device scan error: {error_msg}")
-        self.device_info.setText(f"扫描错误: {error_msg}\n请检查ADB是否正确安装")
+    
+    def _on_scan_complete(self):
+        """扫描完成处理"""
+        self.scan_btn.setEnabled(True)
+        self.scan_btn.setText("刷新")
+        self._is_scanning = False
     
     def _update_device_table(self):
         """更新设备表格"""
@@ -354,7 +324,6 @@ class ADBTab(QWidget, LoggerMixin):
             if row >= 0 and row < len(self.devices):
                 device = self.devices[row]
                 self.logger.debug(f"Device selected: {device.device_id}, status: {device.status}")
-                self._show_device_info(device)
                 
                 # 根据设备状态启用/禁用连接按钮
                 if device.status == DeviceStatus.ONLINE:
@@ -374,36 +343,6 @@ class ADBTab(QWidget, LoggerMixin):
             import traceback
             traceback.print_exc()
     
-    def _show_device_info(self, device: Device):
-        """显示设备信息（简化版）"""
-        try:
-            info_text = f"ID: {device.device_id}\n"
-            info_text += f"名称: {device.device_name or '未知'}\n"
-            
-            # 安全获取状态
-            if hasattr(device, 'status') and device.status:
-                if hasattr(device.status, 'value'):
-                    info_text += f"状态: {device.status.value}\n"
-                else:
-                    info_text += f"状态: {str(device.status)}\n"
-            else:
-                info_text += "状态: 未知\n"
-            
-            # 安全获取连接类型
-            if hasattr(device, 'connection_type') and device.connection_type:
-                if hasattr(device.connection_type, 'value'):
-                    info_text += f"连接: {device.connection_type.value.upper()}"
-                else:
-                    info_text += f"连接: {str(device.connection_type).upper()}"
-            else:
-                info_text += "连接: 未知"
-            
-            self.device_info.setText(info_text)
-        except Exception as e:
-            self.logger.error(f"Error showing device info: {e}", exc_info=True)
-            import traceback
-            traceback.print_exc()
-            self.device_info.setText("获取设备信息失败")
     
     def _connect_selected(self):
         """连接选中的设备"""
@@ -418,20 +357,52 @@ class ADBTab(QWidget, LoggerMixin):
             QMessageBox.warning(self, "警告", "设备不在线")
             return
         
-        if self.adb_service.connect_device(device.device_id):
-            self._update_connection_status(True, device.device_id)
-            self.logger.info(f"Connected to device: {device.device_id}")
+        # 检查是否已有连接线程在运行
+        if hasattr(self, 'connect_thread') and self.connect_thread and self.connect_thread.isRunning():
+            QMessageBox.warning(self, "提示", "正在连接中，请稍候")
+            return
+        
+        # 清理旧的连接线程
+        if hasattr(self, 'connect_thread') and self.connect_thread:
+            try:
+                self.connect_thread.connection_finished.disconnect()
+            except TypeError:
+                pass
+            self.connect_thread.deleteLater()
+            self.connect_thread = None
+        
+        # 禁用连接按钮，防止重复点击
+        self.connect_btn.setEnabled(False)
+        self.connect_btn.setText("连接中...")
+        
+        # 创建并启动连接线程
+        self.connect_thread = DeviceConnectThread(self.adb_service, device.device_id, device)
+        self.connect_thread.connection_finished.connect(self._on_connection_finished)
+        self.connect_thread.start()
+    
+    def _on_connection_finished(self, success: bool, message: str, device: Optional[Device]):
+        """设备连接完成处理"""
+        # 恢复连接按钮
+        self.connect_btn.setEnabled(True)
+        self.connect_btn.setText("连接")
+        
+        if success:
+            # 连接成功
+            self._update_connection_status(True, device.device_id if device else "")
+            self.logger.info(message)
             
             # 更新按钮状态
-            if hasattr(self, 'connect_btn') and self.connect_btn:
-                self.connect_btn.setEnabled(False)
-            if hasattr(self, 'disconnect_btn') and self.disconnect_btn:
-                self.disconnect_btn.setEnabled(True)
+            self.connect_btn.setEnabled(False)
+            self.disconnect_btn.setEnabled(True)
             
-            # 刷新设备信息
-            self._show_device_info(device)
         else:
-            QMessageBox.critical(self, "错误", "连接失败")
+            # 连接失败
+            QMessageBox.critical(self, "错误", message)
+            
+        # 清理连接线程
+        if hasattr(self, 'connect_thread'):
+            self.connect_thread.deleteLater()
+            self.connect_thread = None
     
     def _disconnect_device(self):
         """断开连接"""
@@ -447,8 +418,6 @@ class ADBTab(QWidget, LoggerMixin):
         if hasattr(self, 'disconnect_btn') and self.disconnect_btn:
             self.disconnect_btn.setEnabled(False)
         
-        # 清空设备信息
-        self.device_info.setText("设备已断开")
     
     def _connect_wifi(self):
         """WiFi连接"""
@@ -483,11 +452,6 @@ class ADBTab(QWidget, LoggerMixin):
                     font-size: 11px;
                 }
             """)
-            # 启用游戏操作按钮
-            self.wake_game_btn.setEnabled(True)
-            self.stop_game_btn.setEnabled(True)
-            # 检查游戏状态
-            self._check_game_status()
         else:
             self.connection_status.setText("未连接")
             self.connection_status.setStyleSheet("""
@@ -501,84 +465,47 @@ class ADBTab(QWidget, LoggerMixin):
                     font-size: 11px;
                 }
             """)
-            # 禁用游戏操作按钮
-            self.wake_game_btn.setEnabled(False)
-            self.stop_game_btn.setEnabled(False)
-            self.game_status_label.setText("游戏状态: 未检测")
     
-    def _check_game_status(self):
-        """检查游戏状态"""
-        if not self.adb_service.current_device:
-            self.game_status_label.setText("游戏状态: 设备未连接")
-            return
-        
-        try:
-            # 检查游戏是否在运行
-            package_name = "com.lilithgame.igame.android.cn"
-            if self.adb_service.is_app_running(package_name):
-                self.game_status_label.setText("游戏状态: 运行中")
-                self.game_status_label.setStyleSheet("QLabel { color: #2e7d32; font-size: 11px; padding: 3px; }")
-            else:
-                self.game_status_label.setText("游戏状态: 未运行")
-                self.game_status_label.setStyleSheet("QLabel { color: #666; font-size: 11px; padding: 3px; }")
-        except Exception as e:
-            self.logger.debug(f"Failed to check game status: {e}")
-            self.game_status_label.setText("游戏状态: 未知")
-            self.game_status_label.setStyleSheet("QLabel { color: #666; font-size: 11px; padding: 3px; }")
     
-    def _wake_and_start_game(self):
-        """唤醒并启动游戏"""
-        if not self.adb_service.current_device:
-            QMessageBox.warning(self, "提示", "请先连接设备")
-            return
+    def cleanup(self):
+        """清理资源"""
+        # 清理连接线程
+        if hasattr(self, 'connect_thread') and self.connect_thread:
+            try:
+                self.connect_thread.connection_finished.disconnect()
+            except TypeError:
+                pass
+            
+            if self.connect_thread.isRunning():
+                self.connect_thread.quit()
+                if not self.connect_thread.wait(1000):
+                    self.connect_thread.terminate()
+                    self.connect_thread.wait()
+            
+            self.connect_thread.deleteLater()
+            self.connect_thread = None
         
-        # 禁用按钮防止重复点击
-        self.wake_game_btn.setEnabled(False)
-        self.wake_game_btn.setText("启动中...")
+        # 清理扫描线程
+        if self.scan_thread:
+            try:
+                self.scan_thread.devices_found.disconnect()
+                self.scan_thread.error_occurred.disconnect()
+                self.scan_thread.finished.disconnect()
+            except TypeError:
+                pass
+            
+            if self.scan_thread.isRunning():
+                self.scan_thread.quit()
+                if not self.scan_thread.wait(1000):
+                    self.scan_thread.terminate()
+                    self.scan_thread.wait()
+            
+            self.scan_thread.deleteLater()
+            self.scan_thread = None
         
-        # 创建并启动线程
-        self.wake_game_thread = WakeGameThread(self.adb_service)
-        self.wake_game_thread.progress_signal.connect(self._on_wake_game_progress)
-        self.wake_game_thread.finished_signal.connect(self._on_wake_game_finished)
-        self.wake_game_thread.start()
+        
     
-    def _on_wake_game_progress(self, message: str):
-        """唤醒游戏进度更新"""
-        self.wake_game_btn.setText(message[:10] + "...")  # 限制按钮文字长度
-        self.logger.info(message)
-    
-    def _on_wake_game_finished(self, success: bool, message: str):
-        """唤醒游戏完成"""
-        # 恢复按钮状态
-        self.wake_game_btn.setEnabled(True)
-        self.wake_game_btn.setText("唤醒游戏")
-        
-        # 显示结果
-        if success:
-            QMessageBox.information(self, "成功", message)
-            self._check_game_status()
-        else:
-            QMessageBox.warning(self, "失败", message)
-        
-        # 清理线程
-        if hasattr(self, 'wake_game_thread'):
-            self.wake_game_thread.deleteLater()
-            self.wake_game_thread = None
-    
-    def _stop_game(self):
-        """停止游戏"""
-        if not self.adb_service.current_device:
-            QMessageBox.warning(self, "提示", "请先连接设备")
-            return
-        
-        package_name = "com.lilithgame.igame.android.cn"
-        
-        try:
-            if self.adb_service.stop_app(package_name):
-                QMessageBox.information(self, "成功", "游戏已停止")
-                self._check_game_status()
-            else:
-                QMessageBox.warning(self, "失败", "无法停止游戏")
-        except Exception as e:
-            self.logger.error(f"Failed to stop game: {e}")
-            QMessageBox.critical(self, "错误", f"停止游戏失败: {str(e)}")
+    def closeEvent(self, event):
+        """窗口关闭事件"""
+        self.cleanup()
+        super().closeEvent(event)

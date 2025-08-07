@@ -57,11 +57,16 @@ class AFK2Controller(BaseGameController):
             image_recognizer: 图像识别器
             ocr_engine: OCR引擎
         """
-        # 设置默认包名
+        # 如果没有配置，创建默认配置
         if config is None:
             config = GameConfig()
-        config.package_name = "com.lilith.odyssey.cn"
-        config.main_activity = ".MainActivity"
+        
+        # 如果配置中没有设置包名，使用默认包名
+        # 注意：优先使用配置文件中的包名
+        if not hasattr(config, 'package_name') or not config.package_name:
+            config.package_name = "com.lilithgame.igame.android.cn"  # 使用国服正确包名
+        
+        # 不设置 main_activity，让 ADB 使用 monkey 命令自动启动
         
         super().__init__(adb_service, config, image_recognizer, ocr_engine)
         
