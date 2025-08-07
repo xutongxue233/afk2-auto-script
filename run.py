@@ -94,9 +94,9 @@ def run_daily_idle_reward(components):
     print("开始运行每日挂机奖励任务...")
     
     controller = components['controller']
-    adb_service = components['adb_service']
-    image_recognizer = components['image_recognizer']
-    ocr_engine = components['ocr_engine']
+    adb_service = components['adb']
+    image_recognizer = components['recognizer']
+    ocr_engine = components['ocr']
     
     # 创建唤醒游戏任务
     from src.tasks.wake_game_task import WakeGameTask

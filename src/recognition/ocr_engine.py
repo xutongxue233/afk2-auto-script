@@ -40,6 +40,22 @@ class OCRConfig:
     det_db_thresh: float = 0.3  # 文本检测阈值
     rec_thresh: float = 0.5  # 文本识别阈值
     preprocess: bool = False  # 是否预处理图像（默认关闭，避免过度处理）
+    
+    def __post_init__(self):
+        """数据类初始化后的处理，转换语言代码兼容性"""
+        # 兼容旧的语言代码
+        lang_mapping = {
+            'chi_sim': 'ch',  # 简体中文
+            'chi_tra': 'ch',  # 繁体中文（PaddleOCR的ch模型支持繁体）
+            'chinese': 'ch',
+            'zh': 'ch',
+            'zh_CN': 'ch',
+            'eng': 'en',  # 英文
+            'english': 'en',
+        }
+        # 转换语言代码
+        if self.lang in lang_mapping:
+            self.lang = lang_mapping[self.lang]
 
 
 class OCREngine(LoggerMixin):
@@ -75,20 +91,48 @@ class OCREngine(LoggerMixin):
         Returns:
             是否预加载成功
         """
+        import sys
+        import io
+        import logging
+        
         try:
-            self._ensure_engine_initialized()
+            # 临时禁用输出
+            old_stdout = sys.stdout
+            old_stderr = sys.stderr
+            sys.stdout = io.StringIO()
+            sys.stderr = io.StringIO()
             
-            # 执行一次空识别来完全加载模型
-            import numpy as np
-            dummy_image = np.ones((100, 100, 3), dtype=np.uint8) * 255
+            # 临时提高日志级别
+            old_log_level = logging.getLogger().level
+            logging.getLogger().setLevel(logging.ERROR)
+            logging.getLogger('ppocr').setLevel(logging.ERROR)
+            logging.getLogger('paddleocr').setLevel(logging.ERROR)
+            
             try:
-                self._paddleocr.ocr(dummy_image)
-            except:
-                pass  # 忽略空图像的识别错误
-            
-            self.logger.info("OCR引擎预加载完成")
-            return True
+                self._ensure_engine_initialized()
+                
+                # 执行一次空识别来完全加载模型
+                import numpy as np
+                dummy_image = np.ones((100, 100, 3), dtype=np.uint8) * 255
+                try:
+                    self._paddleocr.ocr(dummy_image)
+                except:
+                    pass  # 忽略空图像的识别错误
+                
+                self.logger.info("OCR引擎预加载完成")
+                return True
+                
+            finally:
+                # 恢复输出
+                sys.stdout = old_stdout
+                sys.stderr = old_stderr
+                logging.getLogger().setLevel(old_log_level)
+                
         except Exception as e:
+            # 确保输出被恢复
+            sys.stdout = old_stdout if 'old_stdout' in locals() else sys.stdout
+            sys.stderr = old_stderr if 'old_stderr' in locals() else sys.stderr
+            
             self.logger.error(f"OCR引擎预加载失败: {e}")
             return False
     
@@ -142,24 +186,52 @@ class OCREngine(LoggerMixin):
     
     def _init_paddleocr(self) -> None:
         """初始化PaddleOCR引擎"""
+        import os
+        import sys
+        import logging
+        
         try:
+            # 临时禁用PaddleOCR的日志输出
+            original_stdout = sys.stdout
+            original_stderr = sys.stderr
+            original_log_level = logging.getLogger().level
+            
+            # 抑制PaddleOCR的输出
+            logging.getLogger('ppocr').setLevel(logging.ERROR)
+            logging.getLogger('paddleocr').setLevel(logging.ERROR)
+            
+            # 设置环境变量来禁用PaddleOCR的输出
+            os.environ['PPOCR_USE_GPU'] = '0'  # 禁用GPU避免CUDA相关日志
+            
             from paddleocr import PaddleOCR
             
             # PaddleOCR配置，使用最小参数避免兼容性问题
             try:
-                # 尝试只指定语言参数
-                self._paddleocr = PaddleOCR(lang=self.config.lang)
+                # 使用静默模式初始化
+                self._paddleocr = PaddleOCR(
+                    lang=self.config.lang,
+                    use_gpu=False,  # 禁用GPU
+                    show_log=False,  # 禁用日志显示
+                    enable_mkldnn=False,  # 禁用MKLDNN加速
+                    use_tensorrt=False,  # 禁用TensorRT
+                    use_mp=False,  # 禁用多进程
+                    total_process_num=1,  # 单进程
+                    use_space_char=True  # 启用空格字符识别
+                )
                 self.logger.info("PaddleOCR initialized successfully")
                 
             except Exception as e:
-                # 如果失败，尝试完全默认配置
-                self.logger.warning(f"PaddleOCR init with lang failed: {e}, trying default config")
+                # 如果失败，尝试最小配置
+                self.logger.warning(f"PaddleOCR init with config failed: {e}, trying minimal config")
                 try:
-                    self._paddleocr = PaddleOCR()
-                    self.logger.info("PaddleOCR initialized with default config")
+                    self._paddleocr = PaddleOCR(use_gpu=False, show_log=False)
+                    self.logger.info("PaddleOCR initialized with minimal config")
                 except Exception as e2:
                     self.logger.error(f"PaddleOCR init completely failed: {e2}")
                     raise OCREngineNotFoundError(f"PaddleOCR初始化失败: {e2}. 请运行: pip install paddlepaddle paddleocr")
+            
+            # 恢复日志级别
+            logging.getLogger().setLevel(original_log_level)
             
         except ImportError:
             raise OCREngineNotFoundError("PaddleOCR未安装. 请运行: pip install paddlepaddle paddleocr")

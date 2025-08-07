@@ -79,8 +79,14 @@ class MainWindow(QMainWindow, LoggerMixin):
         ocr_config = OCRConfig(
             lang=self.config.recognition.ocr_language
         )
-        # 预加载OCR引擎，避免首次使用时的延迟
-        self.ocr_engine = OCREngine(ocr_config, preload=True)
+        # 创建OCR引擎，但不立即预加载以避免启动时报错
+        try:
+            self.ocr_engine = OCREngine(ocr_config, preload=False)
+            # 异步预加载OCR引擎
+            QTimer.singleShot(1000, self._preload_ocr_engine)
+        except Exception as e:
+            self.logger.warning(f"Failed to create OCR engine: {e}")
+            self.ocr_engine = None
         
         # 初始化游戏控制器
         self.game_controller = AFK2Controller(
@@ -96,7 +102,11 @@ class MainWindow(QMainWindow, LoggerMixin):
             task_history_dir=Path("task_history")
         )
         
-        self.task_executor = TaskExecutor(game_controller=self.game_controller, adb_service=self.adb_service)
+        self.task_executor = TaskExecutor(
+            game_controller=self.game_controller, 
+            adb_service=self.adb_service,
+            ocr_engine=self.ocr_engine
+        )
         
         self.task_scheduler = TaskScheduler(
             task_manager=self.task_manager,
@@ -463,6 +473,18 @@ class MainWindow(QMainWindow, LoggerMixin):
             event.accept()
         else:
             event.ignore()
+    
+    def _preload_ocr_engine(self):
+        """异步预加载OCR引擎"""
+        if self.ocr_engine:
+            try:
+                self.logger.info("Starting OCR engine preload...")
+                if self.ocr_engine.preload():
+                    self.logger.info("OCR engine preloaded successfully")
+                else:
+                    self.logger.warning("OCR engine preload failed")
+            except Exception as e:
+                self.logger.warning(f"OCR engine preload error: {e}")
 
 
 def main():

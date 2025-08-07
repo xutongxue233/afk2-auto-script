@@ -156,7 +156,9 @@ class ImageRecognizer(LoggerMixin):
                      threshold: Optional[float] = None,
                      method: Optional[str] = None,
                      region: Optional[Tuple[int, int, int, int]] = None,
-                     use_grayscale: bool = True) -> Optional[MatchResult]:
+                     use_grayscale: bool = True,
+                     preprocessing: str = 'auto',
+                     use_contour: bool = False) -> Optional[MatchResult]:
         """
         在截图中查找模板
         
@@ -167,6 +169,7 @@ class ImageRecognizer(LoggerMixin):
             method: 匹配方法（覆盖模板默认值）
             region: 搜索区域 (x, y, width, height)
             use_grayscale: 是否使用灰度处理
+            preprocessing: 预处理方式 ('auto', 'grayscale', 'binary', 'canny', 'adaptive', 'none')
         
         Returns:
             匹配结果，未找到返回None
@@ -191,8 +194,68 @@ class ImageRecognizer(LoggerMixin):
         threshold = threshold or template.threshold
         method = method or template.method
         
-        # 如果使用灰度处理
-        if use_grayscale:
+        # 如果使用轮廓匹配
+        if use_contour:
+            return self._find_by_contour(screenshot, template, threshold, region_offset)
+        
+        # 如果auto模式，尝试多种方法并选择最佳结果
+        if preprocessing == 'auto':
+            best_result = None
+            best_confidence = 0
+            
+            # 先尝试轮廓匹配（对背景变化最鲁棒）
+            try:
+                result = self._find_by_contour(screenshot, template, threshold, region_offset)
+                if result and result.confidence > best_confidence:
+                    best_result = result
+                    best_confidence = result.confidence
+                    if best_confidence > 0.7:  # 轮廓匹配阈值可以低一些
+                        self.logger.debug(f"Best match with contour: confidence={best_confidence:.3f}")
+                        return best_result
+            except:
+                pass
+            
+            # 尝试不同的预处理方法
+            for prep_method in ['canny', 'grayscale', 'adaptive', 'binary', 'none']:
+                try:
+                    result = self._find_with_preprocessing(
+                        screenshot, template, threshold, method, 
+                        region_offset, prep_method
+                    )
+                    if result and result.confidence > best_confidence:
+                        best_result = result
+                        best_confidence = result.confidence
+                        # 如果置信度超过0.95，直接返回
+                        if best_confidence > 0.95:
+                            self.logger.debug(f"Best match with {prep_method}: confidence={best_confidence:.3f}")
+                            return best_result
+                except:
+                    continue
+            
+            if best_result:
+                self.logger.debug(f"Auto mode best confidence: {best_confidence:.3f}")
+            return best_result
+        
+        # 使用指定的预处理方法
+        if preprocessing != 'auto':
+            return self._find_with_preprocessing(
+                screenshot, template, threshold, method, 
+                region_offset, preprocessing
+            )
+        else:
+            # 默认使用灰度处理
+            return self._find_with_preprocessing(
+                screenshot, template, threshold, method, 
+                region_offset, 'grayscale' if use_grayscale else 'none'
+            )
+    
+    def _find_with_preprocessing(self, screenshot, template, threshold, method, 
+                                 region_offset, preprocessing):
+        """
+        使用指定的预处理方法进行模板匹配
+        """
+        # 预处理截图和模板
+        if preprocessing == 'grayscale':
             # 转换为灰度图
             if len(screenshot.shape) == 3:
                 screenshot_gray = cv2.cvtColor(screenshot, cv2.COLOR_BGR2GRAY)
@@ -211,8 +274,35 @@ class ImageRecognizer(LoggerMixin):
                 template_gray,
                 method
             )
+        elif preprocessing == 'binary':
+            # 二值化处理
+            screenshot_proc = self._apply_binary_threshold(screenshot)
+            template_proc = self._apply_binary_threshold(template.image)
+            result = self._match_template_grayscale(
+                screenshot_proc,
+                template_proc,
+                method
+            )
+        elif preprocessing == 'adaptive':
+            # 自适应二值化
+            screenshot_proc = self._apply_adaptive_threshold(screenshot)
+            template_proc = self._apply_adaptive_threshold(template.image)
+            result = self._match_template_grayscale(
+                screenshot_proc,
+                template_proc,
+                method
+            )
+        elif preprocessing == 'canny':
+            # 边缘检测
+            screenshot_proc = self._apply_canny_edge(screenshot)
+            template_proc = self._apply_canny_edge(template.image)
+            result = self._match_template_grayscale(
+                screenshot_proc,
+                template_proc,
+                method
+            )
         else:
-            # 执行彩色模板匹配
+            # 无预处理，直接彩色匹配
             result = self._match_template(
                 screenshot, 
                 template.image,
@@ -615,6 +705,45 @@ class ImageRecognizer(LoggerMixin):
             self.logger.error(f"Grayscale template matching error: {e}")
             return None
     
+    def _apply_binary_threshold(self, image: np.ndarray) -> np.ndarray:
+        """
+        应用二值化处理
+        """
+        if len(image.shape) == 3:
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = image
+        # 使用OTSU自动阈值
+        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        return binary
+    
+    def _apply_adaptive_threshold(self, image: np.ndarray) -> np.ndarray:
+        """
+        应用自适应二值化处理
+        """
+        if len(image.shape) == 3:
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = image
+        # 自适应二值化，适合光照不均匀的情况
+        adaptive = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                        cv2.THRESH_BINARY, 11, 2)
+        return adaptive
+    
+    def _apply_canny_edge(self, image: np.ndarray) -> np.ndarray:
+        """
+        应用Canny边缘检测
+        """
+        if len(image.shape) == 3:
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = image
+        # 应用高斯模糊减少噪声
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        # Canny边缘检测
+        edges = cv2.Canny(blurred, 50, 150)
+        return edges
+    
     def _pil_to_cv2(self, image: Image.Image) -> np.ndarray:
         """PIL Image转OpenCV格式"""
         return cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
@@ -643,3 +772,132 @@ class ImageRecognizer(LoggerMixin):
             else:
                 self._matcher = cv2.BFMatcher(cv2.NORM_HAMMING)
         return self._matcher
+    
+    def _find_by_contour(self, screenshot, template, threshold, region_offset):
+        """
+        使用轮廓匹配查找模板
+        对背景变化更鲁棒，只关注形状特征
+        """
+        try:
+            # 转换为numpy数组
+            if isinstance(screenshot, Image.Image):
+                screenshot = self._pil_to_cv2(screenshot)
+            
+            # 加载模板
+            if isinstance(template, str):
+                template = self.load_template(template)
+            
+            # 转换为灰度图
+            if len(screenshot.shape) == 3:
+                screen_gray = cv2.cvtColor(screenshot, cv2.COLOR_BGR2GRAY)
+            else:
+                screen_gray = screenshot
+                
+            if len(template.image.shape) == 3:
+                template_gray = cv2.cvtColor(template.image, cv2.COLOR_BGR2GRAY)
+            else:
+                template_gray = template.image
+            
+            # 使用Canny边缘检测提取轮廓
+            screen_edges = cv2.Canny(screen_gray, 50, 150)
+            template_edges = cv2.Canny(template_gray, 50, 150)
+            
+            # 进行模板匹配
+            result = cv2.matchTemplate(screen_edges, template_edges, cv2.TM_CCOEFF_NORMED)
+            
+            # 找到最佳匹配
+            min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
+            
+            threshold = threshold or 0.4  # 轮廓匹配的阈值可以更低
+            
+            if max_val >= threshold:
+                # 计算实际坐标
+                x = max_loc[0] + region_offset[0]
+                y = max_loc[1] + region_offset[1]
+                
+                return MatchResult(
+                    confidence=max_val,
+                    position=(x, y),
+                    size=(template.image.shape[1], template.image.shape[0]),
+                    center=(x + template.image.shape[1] // 2, 
+                           y + template.image.shape[0] // 2),
+                    method='CONTOUR'
+                )
+            
+            return None
+            
+        except Exception as e:
+            self.logger.debug(f"Contour matching failed: {e}")
+            return None
+    
+    def find_template_multi_scale(self, screenshot: Union[Image.Image, np.ndarray],
+                                 template: Union[str, Template],
+                                 scales: List[float] = None,
+                                 threshold: float = 0.5,
+                                 preprocessing: str = 'contour') -> Optional[MatchResult]:
+        """
+        多尺度模板匹配，适应不同分辨率
+        
+        Args:
+            screenshot: 截图
+            template: 模板
+            scales: 缩放比例列表
+            threshold: 匹配阈值
+            preprocessing: 预处理方法
+        
+        Returns:
+            匹配结果
+        """
+        if scales is None:
+            scales = [0.8, 0.9, 1.0, 1.1, 1.2]  # 默认尺度范围
+        
+        best_result = None
+        best_confidence = 0
+        
+        # 加载模板
+        if isinstance(template, str):
+            template_obj = self.load_template(template)
+        else:
+            template_obj = template
+        
+        for scale in scales:
+            try:
+                # 缩放模板
+                width = int(template_obj.image.shape[1] * scale)
+                height = int(template_obj.image.shape[0] * scale)
+                scaled_template = cv2.resize(template_obj.image, (width, height))
+                
+                # 创建临时模板对象
+                temp_template = Template(
+                    name=template_obj.name,
+                    path=template_obj.path,
+                    image=scaled_template,
+                    threshold=threshold,
+                    method=template_obj.method
+                )
+                
+                # 尝试匹配
+                if preprocessing == 'contour':
+                    result = self._find_by_contour(screenshot, temp_template, threshold, (0, 0))
+                else:
+                    result = self.find_template(
+                        screenshot, 
+                        temp_template,
+                        threshold=threshold,
+                        preprocessing=preprocessing
+                    )
+                
+                if result and result.confidence > best_confidence:
+                    best_result = result
+                    best_confidence = result.confidence
+                    self.logger.debug(f"Found match at scale {scale}: confidence={best_confidence:.3f}")
+                    
+                    # 如果找到很好的匹配，提前返回
+                    if best_confidence > 0.8:
+                        return best_result
+                        
+            except Exception as e:
+                self.logger.debug(f"Multi-scale matching failed at scale {scale}: {e}")
+                continue
+        
+        return best_result

@@ -5,7 +5,7 @@
 
 import os
 import time
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 from datetime import datetime
 from PIL import Image
 
@@ -22,11 +22,14 @@ class WakeGameTask(LoggerMixin):
     """
     唤醒游戏任务
     
-    功能流程：
+    优化后的功能流程：
     1. 根据包名唤醒游戏（启动或切换到前台）
-    2. 识别是否出现"点击开始游戏"按钮，如果出现则点击
-    3. 等待并识别"神秘屋"图标，确认进入游戏主界面
-    4. 识别到神秘屋后，任务完成
+    2. 先快速检查是否已在游戏主界面（通过识别神秘屋图标）
+       - 如果已在主界面，直接完成任务，节省时间
+    3. 如果不在主界面，检查并点击"点击开始游戏"按钮
+       - 首次启动游戏会有较长加载时间
+    4. 等待并识别"神秘屋"图标，确认进入游戏主界面
+    5. 识别到神秘屋后，任务完成
     """
     
     def __init__(self,
@@ -114,14 +117,37 @@ class WakeGameTask(LoggerMixin):
                 }
                 return False
             
-            # 等待游戏加载
+            # 等待游戏初始加载
             time.sleep(3)
             
-            # 步骤2：检查并点击"点击开始游戏"按钮
-            if not self._check_and_tap_start(controller):
-                self.logger.warning("未能处理开始游戏界面")
+            # 步骤2：先尝试识别神秘屋（检查是否已在游戏主界面）
+            self.logger.info("检查是否已在游戏主界面...")
+            if self._quick_check_mystery_house(controller):
+                # 如果已经在主界面，直接完成任务
+                self.startup_time = time.time() - start_time
+                self.logger.info(f"游戏已在主界面，耗时: {self.startup_time:.1f}秒")
+                
+                self.result = {
+                    "success": True,
+                    "was_running": self.was_already_running,
+                    "startup_time": self.startup_time,
+                    "already_in_game": True
+                }
+                self.status = TaskStatus.COMPLETED
+                self.completed_at = datetime.now()
+                return True
             
-            # 步骤3：等待并识别神秘屋，确认进入主界面
+            # 步骤3：未在主界面，检查并点击"点击开始游戏"按钮
+            self.logger.info("未在主界面，检查开始游戏按钮...")
+            if self._check_and_tap_start(controller):
+                self.logger.info("已点击开始游戏，等待加载...")
+                # 首次启动游戏，给予更长的加载时间
+                time.sleep(5)
+            else:
+                self.logger.warning("未找到开始游戏按钮，可能正在加载中...")
+            
+            # 步骤4：等待并识别神秘屋，确认进入主界面
+            self.logger.info("等待游戏加载完成...")
             if self._wait_for_mystery_house(controller):
                 # 计算启动时间
                 self.startup_time = time.time() - start_time
@@ -131,7 +157,8 @@ class WakeGameTask(LoggerMixin):
                 self.result = {
                     "success": True,
                     "was_running": self.was_already_running,
-                    "startup_time": self.startup_time
+                    "startup_time": self.startup_time,
+                    "already_in_game": False
                 }
                 self.status = TaskStatus.COMPLETED
                 self.completed_at = datetime.now()
@@ -261,6 +288,44 @@ class WakeGameTask(LoggerMixin):
             
         except Exception as e:
             self.logger.error(f"检查开始游戏按钮时出错: {e}")
+            return False
+    
+    def _quick_check_mystery_house(self, controller: BaseGameController) -> bool:
+        """
+        快速检查是否已在游戏主界面（通过识别神秘屋图标）
+        
+        Args:
+            controller: 游戏控制器
+        
+        Returns:
+            是否已在游戏主界面
+        """
+        try:
+            # 加载神秘屋模板图片
+            mystery_house_img = self._load_template_image('mystery_house')
+            if mystery_house_img is None:
+                self.logger.warning("无法加载'神秘屋'模板图片进行快速检查")
+                return False
+            
+            # 截图
+            screenshot = controller.adb.take_screenshot()
+            if screenshot is None:
+                self.logger.warning("无法获取截图进行快速检查")
+                return False
+            
+            # 使用自定义方法识别神秘屋图标
+            result = self._find_template_in_image(screenshot, mystery_house_img, threshold=0.7)
+            
+            if result:
+                x, y = result
+                self.logger.info(f"快速检查：发现神秘屋图标，位置: ({x}, {y})")
+                return True
+            else:
+                self.logger.debug("快速检查：未发现神秘屋图标")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"快速检查神秘屋时出错: {e}")
             return False
     
     def _wait_for_mystery_house(self, controller: BaseGameController,

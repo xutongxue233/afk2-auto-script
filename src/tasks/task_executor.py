@@ -26,16 +26,18 @@ class TaskExecutor(LoggerMixin):
     负责执行具体的任务逻辑
     """
     
-    def __init__(self, game_controller: Optional[AFK2Controller] = None, adb_service: Optional['ADBService'] = None):
+    def __init__(self, game_controller: Optional[AFK2Controller] = None, adb_service: Optional['ADBService'] = None, ocr_engine: Optional['OCREngine'] = None):
         """
         初始化任务执行器
         
         Args:
             game_controller: 游戏控制器
             adb_service: ADB服务实例
+            ocr_engine: OCR引擎实例（可选）
         """
         self.game_controller = game_controller
         self.adb_service = adb_service
+        self.ocr_engine = ocr_engine
         
         # 任务执行函数注册表
         self._executors: Dict[str, Callable] = {}
@@ -87,6 +89,22 @@ class TaskExecutor(LoggerMixin):
             
             # 更新统计
             self._update_stats(task_type, True, time.time() - start_time)
+            
+            # 任务执行成功后返回首页（排除系统任务）
+            if task_type not in ['system', 'wake_game'] and self.game_controller:
+                try:
+                    # 先检查是否已经在首页
+                    self.logger.info("Checking if already at home screen...")
+                    if self._is_at_home_screen():
+                        self.logger.info("Already at home screen, no need to return")
+                    else:
+                        self.logger.info("Not at home screen, returning to home...")
+                        if self.game_controller.return_to_home():
+                            self.logger.info("Successfully returned to home screen")
+                        else:
+                            self.logger.warning("Failed to return to home screen")
+                except Exception as e:
+                    self.logger.warning(f"Error during home screen check/return: {e}")
             
             self.logger.info(f"Task executed successfully: {task.task_name}")
             return result
@@ -276,12 +294,17 @@ class TaskExecutor(LoggerMixin):
             images_dir = Path(__file__).parent.parent / 'resources' / 'images'
             image_recognizer = ImageRecognizer(template_dir=images_dir)
             
-            # OCR引擎可选
-            ocr_engine = None
-            try:
-                ocr_engine = OCREngine()
-            except Exception as e:
-                self.logger.warning(f"OCR engine not available: {e}")
+            # 使用传入的OCR引擎实例，如果没有则尝试创建新的
+            ocr_engine = self.ocr_engine
+            if not ocr_engine:
+                try:
+                    self.logger.info("Creating new OCR engine instance for task")
+                    ocr_engine = OCREngine()
+                except Exception as e:
+                    self.logger.warning(f"OCR engine not available: {e}")
+                    ocr_engine = None
+            else:
+                self.logger.info("Using existing OCR engine instance")
             
             # 创建任务实例
             idle_reward_task = DailyIdleRewardTask(adb_service, image_recognizer, ocr_engine)
@@ -399,3 +422,78 @@ class TaskExecutor(LoggerMixin):
         except Exception as e:
             self.logger.error(f"Error ensuring game is running: {e}")
             raise TaskExecutionError(f"Failed to ensure game is running: {e}")
+    
+    def _is_at_home_screen(self) -> bool:
+        """
+        检查是否已经在游戏首页
+        
+        Returns:
+            是否在首页
+        """
+        if not self.game_controller:
+            return False
+        
+        try:
+            from pathlib import Path
+            
+            # 截取当前画面
+            screenshot = self.game_controller.screenshot()
+            
+            # 检查首页标志
+            home_indicator_path = Path(__file__).parent.parent / 'resources' / 'images' / 'home_indicator.png'
+            
+            # 尝试识别首页标志
+            if self.game_controller.recognizer and home_indicator_path.exists():
+                try:
+                    # 扩大搜索区域到右下角（水平60-100%，垂直70-100%）
+                    # 更大的区域提供更多上下文，提高匹配准确性
+                    width, height = screenshot.size
+                    search_region = (
+                        int(width * 0.6),   # x: 从60%开始
+                        int(height * 0.7),  # y: 从70%开始
+                        int(width * 0.4),   # width: 右侧40%
+                        int(height * 0.3)   # height: 底部30%
+                    )
+                    # 优先使用灰度匹配，对罗盘图标这种有内部细节的图标更准确
+                    result = self.game_controller.recognizer.find_template(
+                        screenshot,
+                        'home_indicator',
+                        threshold=0.7,  # 灰度匹配使用更高的阈值
+                        preprocessing='grayscale',  # 使用灰度匹配
+                        region=search_region  # 限定搜索区域
+                    )
+                    
+                    # 如果灰度匹配失败，尝试轮廓匹配
+                    if not result:
+                        result = self.game_controller.recognizer.find_template(
+                            screenshot,
+                            'home_indicator',
+                            threshold=0.35,
+                            use_contour=True,  # 使用轮廓匹配作为备选
+                            region=search_region
+                        )
+                    if result:
+                        self.logger.debug("Home indicator found")
+                        return True
+                except:
+                    pass
+            
+            # 尝试识别神秘屋图标（备用方案）
+            try:
+                mystery_result = self.game_controller.recognizer.find_template(
+                    screenshot,
+                    'mystery_house',
+                    threshold=0.6,  # 降低阈值
+                    preprocessing='auto'  # 自动选择最佳预处理方式
+                )
+                if mystery_result:
+                    self.logger.debug("Mystery house icon found, at home screen")
+                    return True
+            except:
+                pass
+            
+            return False
+            
+        except Exception as e:
+            self.logger.debug(f"Error checking home screen: {e}")
+            return False

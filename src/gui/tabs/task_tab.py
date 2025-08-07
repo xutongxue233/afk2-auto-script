@@ -555,7 +555,6 @@ class TaskTab(QWidget, LoggerMixin):
             
             # 调度任务执行
             self.task_scheduler.schedule_task(task_id)
-            QMessageBox.information(self, "成功", f"任务 {task.task_name} 已开始执行")
             self.logger.info(f"Task scheduled for execution: {task_id} - {task.task_name}")
             
             # 刷新任务列表

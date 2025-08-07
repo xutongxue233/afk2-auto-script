@@ -122,7 +122,7 @@ pylint src/
 
 主要配置项：
 - **adb**: ADB路径、设备ID、连接参数
-- **game**: 包名(com.lilith.odyssey.cn)、启动等待时间
+- **game**: 包名(com.lilithgame.igame.android.cn)、启动等待时间
 - **recognition**: 图像识别阈值、OCR语言
 - **ui**: 界面主题、窗口大小
 
@@ -148,6 +148,11 @@ PENDING -> RUNNING -> COMPLETED/FAILED
 3. **图像识别阈值**: 默认0.8，过低可能误识别
 4. **游戏包名**: 国服为 `com.lilithgame.igame.android.cn`
 5. **错误重试**: 大部分操作支持自动重试（默认3次）
+
+## 图像识别技巧
+
+- 涉及到识别图片的时候需要对图片进行黑白滤镜处理，这样才能保证识别的准确率
+- 识别的图片都必须是英文命名，如果不是需要修改为英文
 
 ## 测试策略
 

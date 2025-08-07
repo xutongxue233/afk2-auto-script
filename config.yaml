@@ -16,7 +16,7 @@ game:
   max_retry_count: 3
 recognition:
   image_threshold: 0.8
-  ocr_language: chi_sim
+  ocr_language: ch
   ocr_engine: paddleocr
   template_matching_method: TM_CCOEFF_NORMED
   enable_debug_output: false
