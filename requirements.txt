@@ -20,5 +20,12 @@ PyYAML>=6.0.1
 # 任务调度
 schedule>=1.2.0
 
+# scrcpy高帧率屏幕串流
+# 安装方式: pip install av adbutils && pip install scrcpy-client --no-deps
+# scrcpy-client声明av<10但实测av>=10完全兼容, av>=10有预编译wheel无需本地编译
+av>=10.0.0
+adbutils>=1.0.8
+scrcpy-client>=0.4.0
+
 # 工具类（可选）
 python-dotenv>=1.0.0

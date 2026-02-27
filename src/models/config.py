@@ -57,7 +57,7 @@ class GameConfig:
         retry_on_failure: 失败时是否重试
         max_retry_count: 最大重试次数
     """
-    package_name: str = "com.lilithgame.hgame.cn"  # 剑与远征：启程国服包名
+    package_name: str = "com.lilithgame.igame.android.cn"  # 剑与远征：启程国服包名
     activity_name: str = ".MainActivity"
     startup_wait_time: int = 10
     operation_delay: float = 0.5
@@ -100,7 +100,7 @@ class RecognitionConfig:
         enable_debug_output: 启用调试输出
     """
     image_threshold: float = 0.8
-    ocr_language: str = "chi_sim"
+    ocr_language: str = "ch"
     ocr_engine: str = "paddleocr"
     template_matching_method: str = "TM_CCOEFF_NORMED"
     enable_debug_output: bool = False
@@ -144,6 +144,35 @@ class UIConfig:
 
 
 @dataclass
+class MonitorConfig:
+    """
+    监控配置
+
+    Attributes:
+        capture_mode: 采集模式 (auto/scrcpy/adb)
+        scrcpy_max_fps: scrcpy最大帧率
+        scrcpy_max_width: scrcpy最大宽度
+        scrcpy_bitrate: scrcpy码率
+    """
+    capture_mode: str = "auto"
+    scrcpy_max_fps: int = 60
+    scrcpy_max_width: int = 800
+    scrcpy_bitrate: int = 8000000
+
+    def validate(self) -> bool:
+        """验证配置的有效性"""
+        if self.capture_mode not in ["auto", "scrcpy", "adb"]:
+            raise ValueError("采集模式必须是auto/scrcpy/adb之一")
+        if self.scrcpy_max_fps < 1 or self.scrcpy_max_fps > 120:
+            raise ValueError("scrcpy最大帧率必须在1-120之间")
+        if self.scrcpy_max_width < 100 or self.scrcpy_max_width > 3840:
+            raise ValueError("scrcpy最大宽度必须在100-3840之间")
+        if self.scrcpy_bitrate < 100000 or self.scrcpy_bitrate > 100000000:
+            raise ValueError("scrcpy码率必须在100000-100000000之间")
+        return True
+
+
+@dataclass
 class AppConfig:
     """
     应用配置主类
@@ -161,6 +190,7 @@ class AppConfig:
     game: GameConfig = field(default_factory=GameConfig)
     recognition: RecognitionConfig = field(default_factory=RecognitionConfig)
     ui: UIConfig = field(default_factory=UIConfig)
+    monitor: MonitorConfig = field(default_factory=MonitorConfig)
     log_level: str = "INFO"
     auto_save: bool = True
     config_version: str = "1.0.0"
@@ -171,6 +201,7 @@ class AppConfig:
         self.game.validate()
         self.recognition.validate()
         self.ui.validate()
+        self.monitor.validate()
         
         if self.log_level not in ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]:
             raise ValueError("日志级别必须是DEBUG/INFO/WARNING/ERROR/CRITICAL之一")
@@ -206,6 +237,8 @@ class AppConfig:
             data['recognition'] = RecognitionConfig(**data['recognition'])
         if 'ui' in data:
             data['ui'] = UIConfig(**data['ui'])
+        if 'monitor' in data:
+            data['monitor'] = MonitorConfig(**data['monitor'])
         
         return cls(**data)
     

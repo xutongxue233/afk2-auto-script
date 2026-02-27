@@ -82,8 +82,8 @@ class MainWindow(QMainWindow, LoggerMixin):
         # 创建OCR引擎，但不立即预加载以避免启动时报错
         try:
             self.ocr_engine = OCREngine(ocr_config, preload=False)
-            # 异步预加载OCR引擎
-            QTimer.singleShot(1000, self._preload_ocr_engine)
+            # 在后台线程异步预加载OCR引擎
+            self.ocr_engine.preload_async(on_ready=self._on_ocr_ready)
         except Exception as e:
             self.logger.warning(f"Failed to create OCR engine: {e}")
             self.ocr_engine = None
@@ -474,17 +474,12 @@ class MainWindow(QMainWindow, LoggerMixin):
         else:
             event.ignore()
     
-    def _preload_ocr_engine(self):
-        """异步预加载OCR引擎"""
-        if self.ocr_engine:
-            try:
-                self.logger.info("Starting OCR engine preload...")
-                if self.ocr_engine.preload():
-                    self.logger.info("OCR engine preloaded successfully")
-                else:
-                    self.logger.warning("OCR engine preload failed")
-            except Exception as e:
-                self.logger.warning(f"OCR engine preload error: {e}")
+    def _on_ocr_ready(self, success: bool, error_msg: Optional[str]) -> None:
+        """OCR引擎异步预加载完成的回调"""
+        if success:
+            self.logger.info("OCR engine preloaded successfully")
+        else:
+            self.logger.warning(f"OCR engine preload failed: {error_msg}")
 
 
 def main():

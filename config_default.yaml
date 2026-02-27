@@ -2,7 +2,7 @@ adb:
   adb_path: adb
   device_id: null
   wireless_address: null
-  screenshot_quality: 90
+  screenshot_quality: 100
   command_timeout: 30
   auto_connect: true
   reconnect_attempts: 3
@@ -29,6 +29,11 @@ ui:
   show_console_log: true
   auto_save_config: true
   confirm_on_exit: true
+monitor:
+  capture_mode: auto
+  scrcpy_max_fps: 60
+  scrcpy_max_width: 800
+  scrcpy_bitrate: 8000000
 log_level: INFO
 auto_save: true
 config_version: 1.0.0

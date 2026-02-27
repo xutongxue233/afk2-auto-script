@@ -7,9 +7,15 @@ import subprocess
 import re
 import time
 import os
+import struct
+import gzip
+import socket
+import threading
 from pathlib import Path
 from typing import List, Optional, Tuple, Dict, Any
 from PIL import Image
+import numpy as np
+import cv2
 import io
 import tempfile
 
@@ -28,11 +34,11 @@ class ADBService(LoggerMixin):
     ADB服务类
     提供与Android设备通信的所有功能
     """
-    
+
     def __init__(self, config: Optional[ADBConfig] = None):
         """
         初始化ADB服务
-        
+
         Args:
             config: ADB配置对象
         """
@@ -41,6 +47,17 @@ class ADBService(LoggerMixin):
         self._adb_path = None
         self._adb_checked = False
         self._adb_available = False
+        self._screenshot_cache: Optional[Image.Image] = None
+        self._screenshot_cache_time: float = 0
+        self._numpy_cache: Optional[np.ndarray] = None
+        self._numpy_cache_time: float = 0
+        # 截图方法自动选择
+        self._screencap_method: Optional[str] = None  # 'raw_netcat', 'raw_gzip', 'encode'
+        self._screencap_tested: bool = False
+        # netcat 相关状态
+        self._netcat_address: Optional[str] = None
+        self._netcat_server: Optional[socket.socket] = None
+        self._netcat_port: int = 0
     
     def _find_adb_path(self) -> str:
         """
@@ -339,13 +356,15 @@ class ADBService(LoggerMixin):
                     output = self.execute_command(f"connect {device_id}", use_device=False)
                     if "connected" not in output.lower() and "already" not in output.lower():
                         raise ADBConnectionError(device_id, f"Failed to connect: {output}")
-                
+
                 # 获取设备列表并查找指定设备
                 devices = self.get_devices()
                 for device in devices:
                     if device.device_id == device_id:
                         if device.status in (DeviceStatus.CONNECTED, DeviceStatus.ONLINE):
                             self.current_device = device
+                            self._screencap_tested = False  # 新设备需重新测速
+                            self._cleanup_netcat_server()
                             self.logger.info(f"Connected to device: {device}")
                             return True
                         elif device.status == DeviceStatus.UNAUTHORIZED:
@@ -364,6 +383,8 @@ class ADBService(LoggerMixin):
                     if device.status in (DeviceStatus.CONNECTED, DeviceStatus.ONLINE):
                         self.current_device = device
                         self.logger.info(f"Connected to first available device: {device}")
+                        self._screencap_tested = False  # 新设备需重新测速
+                        self._cleanup_netcat_server()
                         return True
                 
                 if not devices:
@@ -695,69 +716,364 @@ class ADBService(LoggerMixin):
         self.execute_command(cmd)
         self.logger.debug(f"Pressed key: {key_code}")
     
-    def screenshot(self) -> Image.Image:
+    def screenshot(self, cache_ms: int = 0) -> Image.Image:
         """
-        截取屏幕
-        
+        截取屏幕，自动选择最快的截图方式
+
+        Args:
+            cache_ms: 缓存有效期（毫秒），在此时间内返回缓存截图，0表示不缓存
+
         Returns:
             PIL Image对象
         """
         if not self.current_device:
             raise DeviceNotFoundError()
-        
+
+        # 检查PIL缓存
+        if cache_ms > 0 and self._screenshot_cache is not None:
+            elapsed_ms = (time.time() - self._screenshot_cache_time) * 1000
+            if elapsed_ms < cache_ms:
+                return self._screenshot_cache
+
+        # 检查numpy缓存是否可以复用
+        if cache_ms > 0 and self._numpy_cache is not None:
+            elapsed_ms = (time.time() - self._numpy_cache_time) * 1000
+            if elapsed_ms < cache_ms:
+                rgb = cv2.cvtColor(self._numpy_cache, cv2.COLOR_BGR2RGB)
+                image = Image.fromarray(rgb, 'RGB')
+                self._screenshot_cache = image
+                self._screenshot_cache_time = time.time()
+                return image
+
         try:
-            # 使用screencap命令截图
-            cmd = "shell screencap -p"
-            
-            # 执行命令获取二进制数据
-            cmd_parts = [self._adb_path]
-            if self.current_device:
-                cmd_parts.extend(["-s", self.current_device.device_id])
-            cmd_parts.extend(cmd.split())
-            
-            result = subprocess.run(
-                cmd_parts,
-                capture_output=True,
-                timeout=10
-            )
-            
-            if result.returncode != 0:
-                raise ADBCommandError(cmd, "Screenshot failed")
-            
-            # 将二进制数据转换为PIL Image
-            image_data = result.stdout
-            
-            # Windows系统需要处理换行符
-            if os.name == 'nt':
-                image_data = image_data.replace(b'\r\n', b'\n')
-            
-            image = Image.open(io.BytesIO(image_data))
-            
-            # 根据配置调整质量
+            # 使用numpy路径截图，然后转PIL
+            bgr = self.screenshot_numpy(cache_ms=0)
+
+            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+            image = Image.fromarray(rgb, 'RGB')
+
+            # 当 quality < 100 时做 JPEG 压缩
             if self.config.screenshot_quality < 100:
-                # 如果是RGBA模式，先转换为RGB
-                if image.mode == 'RGBA':
-                    # 创建白色背景
-                    rgb_image = Image.new('RGB', image.size, (255, 255, 255))
-                    # 粘贴RGBA图像，使用alpha通道作为蒙版
-                    rgb_image.paste(image, mask=image.split()[3] if len(image.split()) > 3 else None)
-                    image = rgb_image
-                elif image.mode not in ['RGB', 'L']:
-                    # 其他模式也转换为RGB
-                    image = image.convert('RGB')
-                    
-                # 转换为JPEG格式以减小大小
                 output = io.BytesIO()
                 image.save(output, format='JPEG', quality=self.config.screenshot_quality)
                 output.seek(0)
                 image = Image.open(output)
-            
-            self.logger.debug("Screenshot captured")
+
+            # 更新PIL缓存
+            self._screenshot_cache = image
+            self._screenshot_cache_time = time.time()
+
             return image
-            
+
         except Exception as e:
             self.logger.error(f"Failed to capture screenshot: {e}")
             raise ADBCommandError("screenshot", str(e))
+
+    def _adb_exec_binary(self, cmd: str, timeout: int = 10) -> bytes:
+        """
+        执行ADB命令并返回二进制输出
+
+        Args:
+            cmd: ADB命令
+            timeout: 超时时间
+
+        Returns:
+            二进制输出
+        """
+        cmd_parts = [self._adb_path]
+        if self.current_device:
+            cmd_parts.extend(["-s", self.current_device.device_id])
+        cmd_parts.extend(cmd.split())
+
+        result = subprocess.run(
+            cmd_parts,
+            capture_output=True,
+            timeout=timeout
+        )
+
+        if result.returncode != 0:
+            raise ADBCommandError(cmd, "Command failed")
+
+        return result.stdout
+
+    def screenshot_numpy(self, cache_ms: int = 0) -> np.ndarray:
+        """
+        截取屏幕，返回numpy BGR数组，供高帧率显示使用
+
+        Args:
+            cache_ms: 缓存有效期（毫秒），0表示不缓存
+
+        Returns:
+            numpy BGR ndarray (H, W, 3)
+        """
+        if not self.current_device:
+            raise DeviceNotFoundError()
+
+        # 检查numpy缓存
+        if cache_ms > 0 and self._numpy_cache is not None:
+            elapsed_ms = (time.time() - self._numpy_cache_time) * 1000
+            if elapsed_ms < cache_ms:
+                return self._numpy_cache
+
+        # 首次调用时执行速度测试
+        if not self._screencap_tested:
+            self._screencap_speed_test()
+
+        try:
+            arr = self._screencap_to_numpy()
+
+            # 更新numpy缓存
+            self._numpy_cache = arr
+            self._numpy_cache_time = time.time()
+            # 同步清除PIL缓存（过期）
+            self._screenshot_cache = None
+
+            return arr
+
+        except Exception as e:
+            self.logger.error(f"Failed to capture screenshot (numpy): {e}")
+            raise ADBCommandError("screenshot_numpy", str(e))
+
+    def _screencap_to_numpy(self) -> np.ndarray:
+        """
+        使用当前最快方法截图并返回numpy BGR数组
+        """
+        if self._screencap_method == 'raw_netcat':
+            try:
+                return self._screenshot_raw_netcat_numpy()
+            except Exception:
+                self.logger.warning("raw_netcat failed at runtime, falling back to raw_gzip")
+                self._screencap_method = 'raw_gzip'
+
+        if self._screencap_method == 'raw_gzip':
+            try:
+                return self._screenshot_raw_gzip_numpy()
+            except Exception:
+                self.logger.warning("raw_gzip failed at runtime, falling back to encode")
+                self._screencap_method = 'encode'
+
+        return self._screenshot_encode_numpy()
+
+    def _screenshot_encode_numpy(self) -> np.ndarray:
+        """PNG截图直接返回numpy BGR"""
+        data = self._adb_exec_binary("exec-out screencap -p")
+        arr = np.frombuffer(data, dtype=np.uint8)
+        bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if bgr is None:
+            raise ADBCommandError("screencap -p", "Failed to decode PNG")
+        return bgr
+
+    def _screenshot_raw_gzip_numpy(self) -> np.ndarray:
+        """raw+gzip截图直接返回numpy BGR"""
+        cmd_parts = [self._adb_path]
+        if self.current_device:
+            cmd_parts.extend(["-s", self.current_device.device_id])
+        cmd_parts.extend(["exec-out", "sh", "-c", "screencap | gzip -1"])
+
+        result = subprocess.run(cmd_parts, capture_output=True, timeout=10)
+
+        if result.returncode != 0:
+            raise ADBCommandError("screencap|gzip", "Command failed")
+
+        data = result.stdout
+        if len(data) < 2:
+            raise ADBCommandError("screencap|gzip", "Empty response")
+
+        if data[:2] == b'\x1f\x8b':
+            data = gzip.decompress(data)
+
+        return self._parse_raw_screencap_numpy(data)
+
+    def _screenshot_raw_netcat_numpy(self) -> np.ndarray:
+        """
+        RawByNetcat截图，参考MaaFramework的RawByNetcat策略。
+        设备端执行 screencap | nc HOST PORT，本机通过TCP socket接收原始帧数据。
+        避免gzip压缩开销和exec-out协议开销。
+        """
+        if not self._netcat_server:
+            self._init_netcat_server()
+
+        port = self._netcat_port
+        address = self._netcat_address
+
+        # 在设备上执行 screencap | nc
+        cmd_parts = [self._adb_path]
+        if self.current_device:
+            cmd_parts.extend(["-s", self.current_device.device_id])
+        cmd_parts.extend([
+            "exec-out", "sh", "-c",
+            f"screencap | nc -w 3 {address} {port}"
+        ])
+
+        # 启动设备端命令（不阻塞等待）
+        proc = subprocess.Popen(
+            cmd_parts,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+
+        try:
+            # 接受来自设备的TCP连接
+            self._netcat_server.settimeout(3.0)
+            conn, _ = self._netcat_server.accept()
+            try:
+                conn.settimeout(2.0)
+                chunks = []
+                while True:
+                    chunk = conn.recv(65536)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                data = b''.join(chunks)
+            finally:
+                conn.close()
+        except socket.timeout:
+            proc.kill()
+            raise ADBCommandError("screencap|nc", "Netcat accept/read timeout")
+        finally:
+            proc.wait(timeout=3)
+
+        if len(data) < 16:
+            raise ADBCommandError("screencap|nc", "Data too short")
+
+        return self._parse_raw_screencap_numpy(data)
+
+    def _init_netcat_server(self) -> None:
+        """初始化本地TCP服务端用于netcat接收"""
+        # 获取本机对设备可见的IP地址
+        self._netcat_address = self._get_host_address_for_device()
+
+        # 绑定随机端口
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(('0.0.0.0', 0))
+        srv.listen(1)
+        self._netcat_port = srv.getsockname()[1]
+        self._netcat_server = srv
+        self.logger.info(f"Netcat server listening on 0.0.0.0:{self._netcat_port}")
+
+    def _get_host_address_for_device(self) -> str:
+        """
+        获取本机对ADB设备可见的IP地址。
+        参考MaaFramework: cat /proc/net/arp | grep : 获取ARP表中的网关IP
+        """
+        try:
+            cmd_parts = [self._adb_path]
+            if self.current_device:
+                cmd_parts.extend(["-s", self.current_device.device_id])
+            cmd_parts.extend(["shell", "cat", "/proc/net/arp"])
+
+            result = subprocess.run(cmd_parts, capture_output=True, text=True, timeout=5)
+            if result.returncode == 0 and result.stdout:
+                for line in result.stdout.strip().split('\n'):
+                    if ':' in line:
+                        parts = line.split()
+                        if parts:
+                            ip = parts[0]
+                            if re.match(r'\d+\.\d+\.\d+\.\d+', ip):
+                                self.logger.info(f"Host address from ARP: {ip}")
+                                return ip
+        except Exception as e:
+            self.logger.debug(f"Failed to get address from ARP: {e}")
+
+        # USB连接时使用 adb forward 方案作为回退
+        return "127.0.0.1"
+
+    def _cleanup_netcat_server(self):
+        """关闭netcat服务端"""
+        if self._netcat_server:
+            try:
+                self._netcat_server.close()
+            except Exception:
+                pass
+            self._netcat_server = None
+            self._netcat_port = 0
+
+    def _parse_raw_screencap_numpy(self, data: bytes) -> np.ndarray:
+        """
+        解析原始screencap帧缓冲区数据，返回numpy BGR数组。
+        参考MaaFramework ScreencapHelper::decode_raw
+        """
+        if len(data) < 12:
+            raise ADBCommandError("screencap", "Raw data too short")
+
+        width = struct.unpack_from('<I', data, 0)[0]
+        height = struct.unpack_from('<I', data, 4)[0]
+
+        if width == 0 or height == 0 or width > 8192 or height > 8192:
+            raise ADBCommandError("screencap", f"Invalid dimensions: {width}x{height}")
+
+        expected_pixels = width * height * 4
+        # 参考MaaFramework: header_size = len(data) - expected_pixels
+        header_size = len(data) - expected_pixels
+
+        if header_size < 8 or header_size > 16:
+            raise ADBCommandError("screencap",
+                f"Invalid data size: {len(data)} for {width}x{height}, header={header_size}")
+
+        pixel_data = data[header_size:]
+
+        # 直接从bytes创建RGBA数组，然后转BGR
+        arr = np.frombuffer(pixel_data, dtype=np.uint8).reshape(height, width, 4)
+
+        # 检查alpha通道是否有效（参考MaaFramework检查最后一个像素的alpha）
+        if arr[-1, -1, 3] != 255:
+            raise ADBCommandError("screencap", "Invalid alpha channel")
+
+        # RGBA -> BGR (OpenCV格式)
+        bgr = cv2.cvtColor(arr, cv2.COLOR_RGBA2BGR)
+        return bgr
+
+    def _screencap_speed_test(self) -> None:
+        """
+        测试各截图方法的速度，自动选择最快的方法。
+        参考MaaFramework ScreencapAgent::speed_test
+        """
+        self._screencap_tested = True
+        methods = {}
+
+        # 测试 raw_netcat
+        try:
+            # netcat需要先warmup（第一次建连慢），丢弃第一次结果
+            self._screenshot_raw_netcat_numpy()
+            start = time.perf_counter()
+            self._screenshot_raw_netcat_numpy()
+            elapsed = time.perf_counter() - start
+            methods['raw_netcat'] = elapsed
+            self.logger.info(f"Screencap speed test - raw_netcat: {elapsed*1000:.0f}ms")
+        except Exception as e:
+            self.logger.debug(f"Screencap speed test - raw_netcat failed: {e}")
+            self._cleanup_netcat_server()
+
+        # 测试 raw_gzip
+        try:
+            start = time.perf_counter()
+            self._screenshot_raw_gzip_numpy()
+            elapsed = time.perf_counter() - start
+            methods['raw_gzip'] = elapsed
+            self.logger.info(f"Screencap speed test - raw_gzip: {elapsed*1000:.0f}ms")
+        except Exception as e:
+            self.logger.debug(f"Screencap speed test - raw_gzip failed: {e}")
+
+        # 测试 encode (PNG)
+        try:
+            start = time.perf_counter()
+            self._screenshot_encode_numpy()
+            elapsed = time.perf_counter() - start
+            methods['encode'] = elapsed
+            self.logger.info(f"Screencap speed test - encode: {elapsed*1000:.0f}ms")
+        except Exception as e:
+            self.logger.debug(f"Screencap speed test - encode failed: {e}")
+
+        if not methods:
+            self.logger.error("All screencap methods failed")
+            self._screencap_method = 'encode'
+            return
+
+        # 选择最快的方法
+        best = min(methods, key=methods.get)
+        self._screencap_method = best
+        self.logger.info(f"Screencap method selected: {best} ({methods[best]*1000:.0f}ms)")
     
     def unlock_screen(self) -> bool:
         """
@@ -931,6 +1247,8 @@ class ADBService(LoggerMixin):
             for device in devices:
                 if device.device_id == device_id and device.status == DeviceStatus.ONLINE:
                     self.current_device = device
+                    self._screencap_tested = False  # 新设备需重新测速
+                    self._cleanup_netcat_server()
                     self.logger.info(f"Selected device: {device_id}")
                     return True
             

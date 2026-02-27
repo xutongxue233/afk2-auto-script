@@ -47,8 +47,9 @@ def setup_components():
     ocr_config = OCRConfig(
         lang=config.recognition.ocr_language
     )
-    # 启动时预加载OCR引擎，避免首次使用时的延迟
-    ocr_engine = OCREngine(ocr_config, preload=True)
+    # 启动异步预加载OCR引擎，不阻塞后续组件初始化
+    ocr_engine = OCREngine(ocr_config, preload=False)
+    ocr_engine.preload_async()
     
     # 初始化游戏控制器
     game_controller = AFK2Controller(

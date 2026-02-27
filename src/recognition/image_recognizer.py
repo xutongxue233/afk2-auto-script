@@ -126,7 +126,7 @@ class ImageRecognizer(LoggerMixin):
             
             # 处理透明通道
             mask = None
-            if image.shape[2] == 4:  # BGRA格式
+            if len(image.shape) == 3 and image.shape[2] == 4:  # BGRA格式
                 mask = image[:, :, 3]
                 image = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
             
@@ -157,31 +157,31 @@ class ImageRecognizer(LoggerMixin):
                      method: Optional[str] = None,
                      region: Optional[Tuple[int, int, int, int]] = None,
                      use_grayscale: bool = True,
-                     preprocessing: str = 'auto',
+                     preprocessing: str = 'grayscale',
                      use_contour: bool = False) -> Optional[MatchResult]:
         """
         在截图中查找模板
-        
+
         Args:
-            screenshot: 截图（PIL Image或numpy数组）
+            screenshot: 截图
             template: 模板名称或模板对象
-            threshold: 匹配阈值（覆盖模板默认值）
-            method: 匹配方法（覆盖模板默认值）
+            threshold: 匹配阈值
+            method: 匹配方法
             region: 搜索区域 (x, y, width, height)
             use_grayscale: 是否使用灰度处理
             preprocessing: 预处理方式 ('auto', 'grayscale', 'binary', 'canny', 'adaptive', 'none')
-        
+
         Returns:
             匹配结果，未找到返回None
         """
         # 加载模板
         if isinstance(template, str):
             template = self.load_template(template)
-        
+
         # 转换截图格式
         if isinstance(screenshot, Image.Image):
             screenshot = self._pil_to_cv2(screenshot)
-        
+
         # 裁剪搜索区域
         if region:
             x, y, w, h = region
@@ -189,65 +189,45 @@ class ImageRecognizer(LoggerMixin):
             region_offset = (x, y)
         else:
             region_offset = (0, 0)
-        
+
         # 获取参数
         threshold = threshold or template.threshold
         method = method or template.method
-        
+
         # 如果使用轮廓匹配
         if use_contour:
             return self._find_by_contour(screenshot, template, threshold, region_offset)
-        
-        # 如果auto模式，尝试多种方法并选择最佳结果
+
+        # auto 模式：只尝试 grayscale -> binary -> none 三种，早退阈值 0.85
         if preprocessing == 'auto':
             best_result = None
             best_confidence = 0
-            
-            # 先尝试轮廓匹配（对背景变化最鲁棒）
-            try:
-                result = self._find_by_contour(screenshot, template, threshold, region_offset)
-                if result and result.confidence > best_confidence:
-                    best_result = result
-                    best_confidence = result.confidence
-                    if best_confidence > 0.7:  # 轮廓匹配阈值可以低一些
-                        self.logger.debug(f"Best match with contour: confidence={best_confidence:.3f}")
-                        return best_result
-            except:
-                pass
-            
-            # 尝试不同的预处理方法
-            for prep_method in ['canny', 'grayscale', 'adaptive', 'binary', 'none']:
+
+            for prep_method in ['grayscale', 'binary', 'none']:
                 try:
                     result = self._find_with_preprocessing(
-                        screenshot, template, threshold, method, 
+                        screenshot, template, threshold, method,
                         region_offset, prep_method
                     )
                     if result and result.confidence > best_confidence:
                         best_result = result
                         best_confidence = result.confidence
-                        # 如果置信度超过0.95，直接返回
-                        if best_confidence > 0.95:
-                            self.logger.debug(f"Best match with {prep_method}: confidence={best_confidence:.3f}")
+                        if best_confidence > 0.85:
+                            self.logger.debug(f"Auto mode early exit with {prep_method}: confidence={best_confidence:.3f}")
                             return best_result
-                except:
+                except Exception as e:
+                    self.logger.debug(f"Auto mode {prep_method} failed: {e}")
                     continue
-            
+
             if best_result:
                 self.logger.debug(f"Auto mode best confidence: {best_confidence:.3f}")
             return best_result
-        
+
         # 使用指定的预处理方法
-        if preprocessing != 'auto':
-            return self._find_with_preprocessing(
-                screenshot, template, threshold, method, 
-                region_offset, preprocessing
-            )
-        else:
-            # 默认使用灰度处理
-            return self._find_with_preprocessing(
-                screenshot, template, threshold, method, 
-                region_offset, 'grayscale' if use_grayscale else 'none'
-            )
+        return self._find_with_preprocessing(
+            screenshot, template, threshold, method,
+            region_offset, preprocessing if preprocessing != 'auto' else ('grayscale' if use_grayscale else 'none')
+        )
     
     def _find_with_preprocessing(self, screenshot, template, threshold, method, 
                                  region_offset, preprocessing):
@@ -808,7 +788,7 @@ class ImageRecognizer(LoggerMixin):
             # 找到最佳匹配
             min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
             
-            threshold = threshold or 0.4  # 轮廓匹配的阈值可以更低
+            threshold = threshold if threshold is not None else 0.4  # 轮廓匹配的阈值可以更低
             
             if max_val >= threshold:
                 # 计算实际坐标
@@ -899,5 +879,47 @@ class ImageRecognizer(LoggerMixin):
             except Exception as e:
                 self.logger.debug(f"Multi-scale matching failed at scale {scale}: {e}")
                 continue
-        
+
         return best_result
+
+    def find_color(self, screenshot: Union[Image.Image, np.ndarray],
+                   roi: Tuple[int, int, int, int],
+                   lower: Tuple[int, int, int],
+                   upper: Tuple[int, int, int],
+                   count: int = 1,
+                   color_space: str = 'RGB') -> bool:
+        """
+        在 ROI 区域内检测是否存在满足颜色范围的像素数 >= count
+
+        Args:
+            screenshot: 截图
+            roi: 检测区域 (x, y, width, height)
+            lower: 颜色下界 (R, G, B) 或 (H, S, V)
+            upper: 颜色上界 (R, G, B) 或 (H, S, V)
+            count: 最少需要满足的像素数
+            color_space: 颜色空间 ('RGB' 或 'HSV')
+
+        Returns:
+            是否存在满足条件的像素
+        """
+        if isinstance(screenshot, Image.Image):
+            screenshot = self._pil_to_cv2(screenshot)
+
+        x, y, w, h = roi
+        region = screenshot[y:y+h, x:x+w]
+
+        if color_space == 'HSV':
+            region = cv2.cvtColor(region, cv2.COLOR_BGR2HSV)
+            lower_bound = np.array(lower, dtype=np.uint8)
+            upper_bound = np.array(upper, dtype=np.uint8)
+        else:
+            # RGB -> 转为 BGR 比较，或者将 region 转为 RGB
+            region = cv2.cvtColor(region, cv2.COLOR_BGR2RGB)
+            lower_bound = np.array(lower, dtype=np.uint8)
+            upper_bound = np.array(upper, dtype=np.uint8)
+
+        mask = cv2.inRange(region, lower_bound, upper_bound)
+        matched_count = cv2.countNonZero(mask)
+
+        self.logger.debug(f"find_color: matched {matched_count} pixels (need >= {count})")
+        return matched_count >= count

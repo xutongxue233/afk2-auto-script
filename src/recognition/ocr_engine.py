@@ -4,10 +4,11 @@ OCR引擎模块
 """
 
 import re
+import threading
 from PIL import Image
 import numpy as np
 from pathlib import Path
-from typing import Optional, List, Tuple, Dict, Any, Union
+from typing import Optional, List, Tuple, Dict, Any, Union, Callable
 from dataclasses import dataclass
 import cv2
 
@@ -39,7 +40,7 @@ class OCRConfig:
     use_angle_cls: bool = True  # 是否使用角度分类
     det_db_thresh: float = 0.3  # 文本检测阈值
     rec_thresh: float = 0.5  # 文本识别阈值
-    preprocess: bool = False  # 是否预处理图像（默认关闭，避免过度处理）
+    preprocess: bool = True  # 是否预处理图像
     
     def __post_init__(self):
         """数据类初始化后的处理，转换语言代码兼容性"""
@@ -64,10 +65,13 @@ class OCREngine(LoggerMixin):
     提供文字识别功能
     """
     
+    # 异步加载等待超时时间（秒）
+    _ASYNC_WAIT_TIMEOUT = 60
+
     def __init__(self, config: Optional[OCRConfig] = None, preload: bool = False):
         """
         初始化OCR引擎
-        
+
         Args:
             config: OCR配置
             preload: 是否预加载引擎（启动时立即初始化）
@@ -75,79 +79,173 @@ class OCREngine(LoggerMixin):
         self.config = config or OCRConfig()
         self._paddleocr = None
         self._engine_initialized = False
-        
+
+        # 异步加载相关
+        self._init_lock = threading.Lock()
+        self._ready_event = threading.Event()
+        self._loading = False
+        self._loading_error: Optional[Exception] = None
+        self._on_ready_callback: Optional[Callable[[bool, Optional[str]], None]] = None
+
         self.logger.info(f"OCREngine created with PaddleOCR, lang: {self.config.lang}")
-        
+
         # 如果设置了预加载，立即初始化引擎
         if preload:
             self.logger.info("预加载OCR引擎...")
             self.preload()
-    
+
+    @property
+    def is_ready(self) -> bool:
+        """引擎是否已加载完成可用"""
+        return self._engine_initialized and self._paddleocr is not None
+
+    @property
+    def is_loading(self) -> bool:
+        """引擎是否正在后台加载中"""
+        return self._loading
+
     def preload(self) -> bool:
         """
-        预加载OCR引擎
+        同步预加载OCR引擎
         在应用启动时调用，避免首次使用时的延迟
-        
+
         Returns:
             是否预加载成功
         """
-        import sys
-        import io
-        import logging
-        
-        try:
-            # 临时禁用输出
-            old_stdout = sys.stdout
-            old_stderr = sys.stderr
-            sys.stdout = io.StringIO()
-            sys.stderr = io.StringIO()
-            
-            # 临时提高日志级别
-            old_log_level = logging.getLogger().level
-            logging.getLogger().setLevel(logging.ERROR)
-            logging.getLogger('ppocr').setLevel(logging.ERROR)
-            logging.getLogger('paddleocr').setLevel(logging.ERROR)
-            
+        return self._do_preload()
+
+    def preload_async(self, on_ready: Optional[Callable[[bool, Optional[str]], None]] = None) -> None:
+        """
+        异步预加载OCR引擎，在后台线程中加载模型
+
+        Args:
+            on_ready: 加载完成回调，签名为 (success: bool, error_msg: Optional[str]) -> None
+                      注意: 回调在后台线程中执行，如需更新GUI请自行切换到主线程
+        """
+        with self._init_lock:
+            if self._engine_initialized:
+                if on_ready:
+                    on_ready(True, None)
+                return
+            if self._loading:
+                self._on_ready_callback = on_ready
+                return
+            self._loading = True
+            self._on_ready_callback = on_ready
+
+        thread = threading.Thread(
+            target=self._async_preload_worker,
+            name="OCREngine-AsyncPreload",
+            daemon=True
+        )
+        thread.start()
+
+    def _async_preload_worker(self) -> None:
+        """后台线程执行预加载"""
+        success = self._do_preload()
+
+        callback = self._on_ready_callback
+        if callback:
+            error_msg = str(self._loading_error) if self._loading_error else None
             try:
-                self._ensure_engine_initialized()
-                
+                callback(success, error_msg)
+            except Exception as e:
+                self.logger.warning(f"OCR预加载回调执行异常: {e}")
+
+    def _do_preload(self) -> bool:
+        """
+        执行实际的预加载逻辑
+
+        Returns:
+            是否预加载成功
+        """
+        import logging
+
+        try:
+            # 抑制PaddleOCR的日志输出（线程安全的方式，不重定向全局stdout）
+            loggers_to_suppress = ['ppocr', 'paddleocr', 'paddle']
+            old_levels = {}
+            for name in loggers_to_suppress:
+                logger = logging.getLogger(name)
+                old_levels[name] = logger.level
+                logger.setLevel(logging.ERROR)
+
+            try:
+                # 直接初始化，不经过_ensure_engine_initialized避免死锁
+                with self._init_lock:
+                    if not self._engine_initialized:
+                        self._init_paddleocr()
+                        self._engine_initialized = True
+
                 # 执行一次空识别来完全加载模型
-                import numpy as np
                 dummy_image = np.ones((100, 100, 3), dtype=np.uint8) * 255
                 try:
                     self._paddleocr.ocr(dummy_image)
                 except:
-                    pass  # 忽略空图像的识别错误
-                
+                    pass
+
                 self.logger.info("OCR引擎预加载完成")
                 return True
-                
+
             finally:
-                # 恢复输出
-                sys.stdout = old_stdout
-                sys.stderr = old_stderr
-                logging.getLogger().setLevel(old_log_level)
-                
+                # 恢复日志级别
+                for name, level in old_levels.items():
+                    logging.getLogger(name).setLevel(level)
+
+                with self._init_lock:
+                    self._loading = False
+                    self._ready_event.set()
+
         except Exception as e:
-            # 确保输出被恢复
-            sys.stdout = old_stdout if 'old_stdout' in locals() else sys.stdout
-            sys.stderr = old_stderr if 'old_stderr' in locals() else sys.stderr
-            
+            with self._init_lock:
+                self._loading = False
+                self._loading_error = e
+                self._ready_event.set()
+
             self.logger.error(f"OCR引擎预加载失败: {e}")
             return False
+
+    def wait_until_ready(self, timeout: Optional[float] = None) -> bool:
+        """
+        阻塞等待引擎加载完成
+
+        Args:
+            timeout: 超时时间（秒），None则使用默认超时
+
+        Returns:
+            引擎是否就绪
+        """
+        if self._engine_initialized:
+            return True
+        if timeout is None:
+            timeout = self._ASYNC_WAIT_TIMEOUT
+        return self._ready_event.wait(timeout=timeout) and self._engine_initialized
     
     def _ensure_engine_initialized(self) -> None:
-        """确保OCR引擎已初始化（延迟初始化）"""
+        """确保OCR引擎已初始化（线程安全，支持等待异步加载完成）"""
         if self._engine_initialized:
             return
-        
-        try:
-            self._init_paddleocr()
-            self._engine_initialized = True
-            self.logger.info("PaddleOCR引擎初始化完成")
-        except Exception as e:
-            self.logger.error(f"PaddleOCR引擎初始化失败: {e}")
-            raise
+
+        # 如果后台线程正在加载，等待它完成
+        if self._loading:
+            self.logger.info("OCR引擎正在后台加载中，等待完成...")
+            ready = self._ready_event.wait(timeout=self._ASYNC_WAIT_TIMEOUT)
+            if ready and self._engine_initialized:
+                return
+            if self._loading_error:
+                raise self._loading_error
+
+        with self._init_lock:
+            # 双重检查，避免多线程重复初始化
+            if self._engine_initialized:
+                return
+            try:
+                self._init_paddleocr()
+                self._engine_initialized = True
+                self.logger.info("PaddleOCR引擎初始化完成")
+            except Exception as e:
+                self.logger.error(f"PaddleOCR引擎初始化失败: {e}")
+                raise
     
     def is_engine_available(self) -> bool:
         """
@@ -188,51 +286,87 @@ class OCREngine(LoggerMixin):
         """初始化PaddleOCR引擎"""
         import os
         import sys
+        import io
         import logging
-        
+        import warnings
+
         try:
-            # 临时禁用PaddleOCR的日志输出
-            original_stdout = sys.stdout
+            # 在导入和构造之前抑制所有相关logger
+            loggers_to_suppress = ['ppocr', 'paddleocr', 'paddle', 'paddlex']
+            old_levels = {}
+            for name in loggers_to_suppress:
+                lgr = logging.getLogger(name)
+                old_levels[name] = lgr.level
+                lgr.setLevel(logging.CRITICAL)
+
+            # 重定向stderr抑制子进程噪音输出
+            # Python层: sys.stderr -> StringIO
+            # OS层: fd 2 -> devnull, 彻底抑制子进程的stderr输出
             original_stderr = sys.stderr
-            original_log_level = logging.getLogger().level
-            
-            # 抑制PaddleOCR的输出
-            logging.getLogger('ppocr').setLevel(logging.ERROR)
-            logging.getLogger('paddleocr').setLevel(logging.ERROR)
-            
-            # 设置环境变量来禁用PaddleOCR的输出
-            os.environ['PPOCR_USE_GPU'] = '0'  # 禁用GPU避免CUDA相关日志
-            
-            from paddleocr import PaddleOCR
-            
-            # PaddleOCR配置，使用最小参数避免兼容性问题
+            sys.stderr = io.StringIO()
+
+            devnull_fd = os.open(os.devnull, os.O_WRONLY)
+            original_stderr_fd = os.dup(2)
+            os.dup2(devnull_fd, 2)
+            os.close(devnull_fd)
+
             try:
-                # 使用静默模式初始化
-                self._paddleocr = PaddleOCR(
-                    lang=self.config.lang,
-                    use_gpu=False,  # 禁用GPU
-                    show_log=False,  # 禁用日志显示
-                    enable_mkldnn=False,  # 禁用MKLDNN加速
-                    use_tensorrt=False,  # 禁用TensorRT
-                    use_mp=False,  # 禁用多进程
-                    total_process_num=1,  # 单进程
-                    use_space_char=True  # 启用空格字符识别
-                )
-                self.logger.info("PaddleOCR initialized successfully")
-                
-            except Exception as e:
-                # 如果失败，尝试最小配置
-                self.logger.warning(f"PaddleOCR init with config failed: {e}, trying minimal config")
-                try:
-                    self._paddleocr = PaddleOCR(use_gpu=False, show_log=False)
-                    self.logger.info("PaddleOCR initialized with minimal config")
-                except Exception as e2:
-                    self.logger.error(f"PaddleOCR init completely failed: {e2}")
-                    raise OCREngineNotFoundError(f"PaddleOCR初始化失败: {e2}. 请运行: pip install paddlepaddle paddleocr")
-            
-            # 恢复日志级别
-            logging.getLogger().setLevel(original_log_level)
-            
+                with warnings.catch_warnings():
+                    warnings.filterwarnings('ignore', category=UserWarning)
+
+                    from paddleocr import PaddleOCR
+
+                    # 检测PaddleOCR版本，3.x和2.x的参数完全不同
+                    import paddleocr
+                    major_version = int(paddleocr.__version__.split('.')[0])
+
+                    try:
+                        if major_version >= 3:
+                            # PaddleOCR 3.x API
+                            self._paddleocr = PaddleOCR(
+                                lang=self.config.lang,
+                                device='cpu',
+                                use_doc_orientation_classify=False,
+                                use_doc_unwarping=False,
+                                use_textline_orientation=False,
+                                text_det_thresh=self.config.det_db_thresh,
+                                text_rec_score_thresh=self.config.rec_thresh,
+                            )
+                        else:
+                            # PaddleOCR 2.x API
+                            self._paddleocr = PaddleOCR(
+                                lang=self.config.lang,
+                                use_gpu=False,
+                                show_log=False,
+                                enable_mkldnn=False,
+                                use_tensorrt=False,
+                                use_mp=False,
+                                total_process_num=1,
+                                use_space_char=True,
+                                use_angle_cls=self.config.use_angle_cls,
+                            )
+                        self.logger.info("PaddleOCR initialized successfully")
+
+                    except Exception as e:
+                        self.logger.warning(f"PaddleOCR init with config failed: {e}, trying minimal config")
+                        try:
+                            self._paddleocr = PaddleOCR(lang=self.config.lang)
+                            self.logger.info("PaddleOCR initialized with minimal config")
+                        except Exception as e2:
+                            self.logger.error(f"PaddleOCR init completely failed: {e2}")
+                            raise OCREngineNotFoundError(
+                                f"PaddleOCR初始化失败: {e2}. 请运行: pip install paddlepaddle paddleocr"
+                            )
+            finally:
+                # 恢复OS级stderr
+                os.dup2(original_stderr_fd, 2)
+                os.close(original_stderr_fd)
+                # 恢复Python级stderr
+                sys.stderr = original_stderr
+                # 恢复logger级别
+                for name, level in old_levels.items():
+                    logging.getLogger(name).setLevel(level)
+
         except ImportError:
             raise OCREngineNotFoundError("PaddleOCR未安装. 请运行: pip install paddlepaddle paddleocr")
     
@@ -374,57 +508,61 @@ class OCREngine(LoggerMixin):
     def find_text(self, image: Union[Image.Image, np.ndarray],
                  target_text: str,
                  exact_match: bool = False,
-                 case_sensitive: bool = False) -> Optional[OCRResult]:
+                 case_sensitive: bool = False,
+                 region: Optional[Tuple[int, int, int, int]] = None) -> Optional[OCRResult]:
         """
         在图像中查找特定文本
-        
+
         Args:
             image: 输入图像
             target_text: 要查找的文本
             exact_match: 是否精确匹配
             case_sensitive: 是否区分大小写
-        
+            region: 搜索区域 (x, y, width, height)，仅对该区域做 OCR
+
         Returns:
             找到的OCR结果，未找到返回None
         """
         # 获取所有文本
-        results = self.recognize_with_details(image)
-        
+        results = self.recognize_with_details(image, region=region)
+
         # 准备目标文本
         if not case_sensitive:
             target_text = target_text.lower()
-        
+
         # 查找匹配
         for result in results:
             text = result.text
             if not case_sensitive:
                 text = text.lower()
-            
+
             if exact_match:
                 if text == target_text:
                     return result
             else:
                 if target_text in text:
                     return result
-        
+
         return None
     
     def find_all_text(self, image: Union[Image.Image, np.ndarray],
                      pattern: str,
-                     use_regex: bool = False) -> List[OCRResult]:
+                     use_regex: bool = False,
+                     region: Optional[Tuple[int, int, int, int]] = None) -> List[OCRResult]:
         """
         查找所有匹配的文本
-        
+
         Args:
             image: 输入图像
-            pattern: 匹配模式（字符串或正则表达式）
+            pattern: 匹配模式
             use_regex: 是否使用正则表达式
-        
+            region: 搜索区域 (x, y, width, height)，仅对该区域做 OCR
+
         Returns:
             匹配的OCR结果列表
         """
         # 获取所有文本
-        results = self.recognize_with_details(image)
+        results = self.recognize_with_details(image, region=region)
         
         matches = []
         
@@ -506,34 +644,30 @@ class OCREngine(LoggerMixin):
     def _preprocess_image(self, image: Image.Image) -> Image.Image:
         """
         预处理图像以提高OCR准确率
-        
+
         Args:
             image: 输入图像
-        
+
         Returns:
             处理后的图像
         """
         # 转换为numpy数组
         img_array = np.array(image)
-        
+
         # 转换为灰度图
         if len(img_array.shape) == 3:
             gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
         else:
             gray = img_array
-        
-        # 去噪
-        denoised = cv2.fastNlMeansDenoising(gray, None, 10, 7, 21)
-        
-        # 二值化
-        _, binary = cv2.threshold(denoised, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        
-        # 形态学操作（去除小噪点）
-        kernel = np.ones((2, 2), np.uint8)
-        processed = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
-        
+
+        # OTSU 二值化
+        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+        # PaddleOCR 要求3通道输入，将灰度图转回RGB
+        rgb = cv2.cvtColor(binary, cv2.COLOR_GRAY2RGB)
+
         # 转换回PIL Image
-        return Image.fromarray(processed)
+        return Image.fromarray(rgb)
     
     def _recognize_with_paddleocr(self, image: Image.Image) -> str:
         """
@@ -614,12 +748,15 @@ class OCREngine(LoggerMixin):
     def set_language(self, lang: str) -> None:
         """
         设置识别语言
-        
+
         Args:
             lang: 语言代码
         """
         self.config.lang = lang
         # PaddleOCR需要重新初始化
-        self._engine_initialized = False
-        self._paddleocr = None
+        with self._init_lock:
+            self._engine_initialized = False
+            self._paddleocr = None
+            self._ready_event.clear()
+            self._loading_error = None
         self.logger.info(f"OCR language set to: {lang}, will reinitialize on next use")

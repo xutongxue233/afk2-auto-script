@@ -73,7 +73,7 @@ class AFK2Controller(BaseGameController):
         # AFK2特定配置
         self.auto_battle_enabled = True
         self.skip_dialogues = True
-        self.collect_idle_rewards = True
+        self.enable_collect_idle_rewards = True
         
         self.logger.info("AFK2Controller initialized")
     
@@ -275,7 +275,7 @@ class AFK2Controller(BaseGameController):
         success = True
         
         # 收集挂机奖励
-        if self.collect_idle_rewards:
+        if self.enable_collect_idle_rewards:
             success &= self.collect_idle_rewards()
         
         # 收集邮件奖励
