@@ -1,0 +1,78 @@
+{
+  "version": "1.0",
+  "instances": [
+    {
+      "id": "3m8hxk2",
+      "name": "配置 1",
+      "controllerName": "Android",
+      "resourceName": "Official",
+      "savedDevice": {
+        "adbDeviceName": "37b70ea5-D:/Workspace/afk2-auto-script/adb/adb.exe"
+      },
+      "tasks": [
+        {
+          "id": "ckbheca",
+          "taskName": "WakeGame",
+          "enabled": false,
+          "optionValues": {}
+        },
+        {
+          "id": "3vpbjwk",
+          "taskName": "IdleReward",
+          "enabled": true,
+          "optionValues": {}
+        }
+      ]
+    }
+  ],
+  "settings": {
+    "theme": "light",
+    "accentColor": "emerald",
+    "language": "system",
+    "confirmBeforeDelete": false,
+    "maxLogsPerInstance": 2000,
+    "windowSize": {
+      "width": 1000,
+      "height": 618
+    },
+    "windowPosition": {
+      "x": 2584,
+      "y": 443
+    },
+    "mirrorChyan": {
+      "cdk": "",
+      "channel": "stable"
+    },
+    "showOptionPreview": true,
+    "sidePanelExpanded": true,
+    "rightPanelWidth": 320,
+    "rightPanelCollapsed": false,
+    "connectionPanelExpanded": false,
+    "screenshotPanelExpanded": false,
+    "screenshotFrameRate": "unlimited",
+    "welcomeShownHash": "",
+    "devMode": false,
+    "tcpCompatMode": false,
+    "autoRunOnLaunch": false,
+    "minimizeToTray": false,
+    "onboardingCompleted": true,
+    "preActionConnectDelaySec": 5,
+    "hotkeys": {
+      "startTasks": "F10",
+      "stopTasks": "F11"
+    }
+  },
+  "recentlyClosed": [],
+  "interfaceTaskSnapshot": [
+    "WakeGame",
+    "IdleReward",
+    "DailyTask",
+    "Campaign",
+    "CollectMail",
+    "GuildCheckin",
+    "ShopFreeDraw"
+  ],
+  "newTaskNames": [],
+  "customAccents": [],
+  "lastActiveInstanceId": "3m8hxk2"
+}

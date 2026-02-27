@@ -37,9 +37,5 @@ temp/
 cache/
 
 # MaaFramework
-config/
 debug/
-cache/
 resource/model/ocr/*.onnx
-maafw/
-mxu.exe
