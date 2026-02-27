@@ -1,0 +1,18 @@
+{
+    "Default": {
+        "rate_limit": 1000,
+        "timeout": 20000
+    },
+    "TemplateMatch": {
+        "recognition": "TemplateMatch",
+        "threshold": 0.7
+    },
+    "OCR": {
+        "recognition": "OCR",
+        "threshold": 0.3
+    },
+    "Click": {
+        "action": "Click",
+        "target": true
+    }
+}

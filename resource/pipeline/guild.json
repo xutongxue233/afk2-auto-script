@@ -1,0 +1,48 @@
+{
+    "StartGuildCheckin": {
+        "recognition": "OCR",
+        "timeout": 10000,
+        "action": "DoNothing",
+        "on_error": [
+            "ReturnHome"
+        ],
+        "next": [
+            "OpenGuildPanel"
+        ],
+        "expected": [
+            "神殿",
+            "远征冒险"
+        ],
+        "roi": [
+            0,
+            1400,
+            720,
+            200
+        ]
+    },
+    "OpenGuildPanel": {
+        "recognition": "OCR",
+        "expected": [
+            "公会"
+        ],
+        "action": "Click",
+        "target": true,
+        "post_delay": 2000,
+        "next": [
+            "ClickGuildCheckin"
+        ]
+    },
+    "ClickGuildCheckin": {
+        "recognition": "OCR",
+        "expected": [
+            "签到"
+        ],
+        "timeout": 5000,
+        "action": "Click",
+        "target": true,
+        "post_delay": 1000,
+        "next": [
+            "ReturnHome"
+        ]
+    }
+}

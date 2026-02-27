@@ -1,0 +1,27 @@
+{
+    "app_name": "AFK2 自动化助手",
+    "app_description": "剑与远征：启程 自动化脚本",
+
+    "controller_android": "安卓端",
+    "resource_official": "官服资源",
+
+    "task_wake_game": "唤醒游戏",
+    "task_wake_game_desc": "启动游戏并等待进入主界面",
+    "task_idle_reward": "收集挂机奖励",
+    "task_idle_reward_desc": "收集挂机产生的资源奖励",
+    "task_daily": "日常任务",
+    "task_daily_desc": "一键领取日常任务奖励",
+    "task_campaign": "征战推图",
+    "task_campaign_desc": "自动进行征战关卡挑战",
+    "task_collect_mail": "邮件收取",
+    "task_collect_mail_desc": "一键领取所有邮件附件",
+    "task_guild_checkin": "公会签到",
+    "task_guild_checkin_desc": "自动完成公会每日签到",
+    "task_shop_free_draw": "商店免费抽取",
+    "task_shop_free_draw_desc": "领取商店中的免费抽取机会",
+
+    "option_battle_count": "战斗次数",
+    "option_battle_count_label": "战斗次数",
+    "option_battle_count_desc": "征战推图的战斗次数",
+    "option_battle_count_pattern": "请输入正整数"
+}

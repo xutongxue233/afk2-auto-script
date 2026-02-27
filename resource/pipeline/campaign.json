@@ -1,0 +1,126 @@
+{
+    "StartCampaign": {
+        "recognition": "OCR",
+        "timeout": 10000,
+        "action": "DoNothing",
+        "on_error": [
+            "ReturnHome"
+        ],
+        "next": [
+            "NavigateToCampaign"
+        ],
+        "expected": [
+            "神殿",
+            "远征冒险"
+        ],
+        "roi": [
+            0,
+            1400,
+            720,
+            200
+        ]
+    },
+    "NavigateToCampaign": {
+        "recognition": "OCR",
+        "expected": [
+            "征战"
+        ],
+        "action": "Click",
+        "target": true,
+        "post_delay": 2000,
+        "next": [
+            "ClickChallenge"
+        ]
+    },
+    "ClickChallenge": {
+        "recognition": "OCR",
+        "expected": [
+            "挑战"
+        ],
+        "timeout": 10000,
+        "action": "Click",
+        "target": true,
+        "post_delay": 1000,
+        "next": [
+            "WaitBattleStart"
+        ]
+    },
+    "WaitBattleStart": {
+        "recognition": "DirectHit",
+        "action": "DoNothing",
+        "pre_delay": 3000,
+        "next": [
+            "WaitBattleResult"
+        ]
+    },
+    "WaitBattleResult": {
+        "recognition": "OCR",
+        "expected": [
+            "胜利",
+            "失败",
+            "Victory",
+            "Defeat"
+        ],
+        "timeout": 120000,
+        "action": "DoNothing",
+        "next": [
+            "HandleBattleVictory",
+            "HandleBattleDefeat"
+        ]
+    },
+    "HandleBattleVictory": {
+        "recognition": "OCR",
+        "expected": [
+            "胜利",
+            "Victory"
+        ],
+        "action": "Custom",
+        "custom_action": "reset_campaign_failure",
+        "post_delay": 1000,
+        "next": [
+            "ContinueAfterVictory"
+        ]
+    },
+    "ContinueAfterVictory": {
+        "recognition": "DirectHit",
+        "action": "Click",
+        "target": [
+            640,
+            600
+        ],
+        "post_delay": 2000,
+        "next": [
+            "ClickChallenge"
+        ]
+    },
+    "HandleBattleDefeat": {
+        "recognition": "OCR",
+        "expected": [
+            "失败",
+            "Defeat"
+        ],
+        "action": "Click",
+        "target": [
+            640,
+            600
+        ],
+        "post_delay": 2000,
+        "next": [
+            "CheckFailureCount"
+        ]
+    },
+    "CheckFailureCount": {
+        "recognition": "DirectHit",
+        "action": "Custom",
+        "custom_action": "check_campaign_failure",
+        "custom_action_param": {
+            "max_failures": 3
+        },
+        "next": [
+            "ClickChallenge"
+        ],
+        "on_error": [
+            "ReturnHome"
+        ]
+    }
+}

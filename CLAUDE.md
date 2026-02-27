@@ -4,167 +4,139 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概览
 
-《剑与远征：启程》(AFK2) 手游自动化脚本，通过 ADB 与 Android 设备通信实现游戏自动化操作。基于 PyQt6 构建 GUI 界面，支持图像识别、OCR 文字识别和任务调度。
+《剑与远征：启程》(AFK2) 手游自动化脚本，基于 MaaFramework 实现游戏自动化操作。使用 Pipeline JSON 定义任务流程，Python AgentServer 实现自定义逻辑，MXU (Tauri + React) 作为 GUI 界面。
+
+## 技术架构
+
+- **MaaFramework**: 核心自动化框架，提供 ADB 控制、图像识别、OCR、任务编排
+- **Pipeline JSON**: 声明式任务流程定义
+- **Python AgentServer**: 自定义识别器和动作
+- **MXU**: 基于 Tauri + React 的 GUI 客户端，读取 interface.json 自动生成界面
+
+## 目录结构
+
+```
+afk2-auto-script/
+├── interface.json                  # PI V2 配置文件（MXU 读取）
+├── resource/
+│   ├── default_pipeline.json       # 全局默认 Pipeline 参数
+│   ├── image/                      # 模板图片（720p 规格）
+│   ├── model/ocr/                  # OCR 模型文件
+│   └── pipeline/                   # Pipeline JSON 任务定义
+│       ├── navigate.json           # 通用导航/返回主界面
+│       ├── wake_game.json          # 唤醒游戏
+│       ├── idle_reward.json        # 挂机奖励
+│       ├── daily_task.json         # 日常任务
+│       ├── campaign.json           # 征战推图
+│       ├── mail.json               # 邮件收取
+│       ├── guild.json              # 公会签到
+│       └── shop.json               # 商店免费抽取
+├── agent/                          # Python 自定义逻辑
+│   ├── main.py                     # AgentServer 入口
+│   ├── custom_reco.py              # 自定义识别器
+│   └── custom_action.py            # 自定义动作
+├── lang/
+│   └── zh-cn.json                  # 中文国际化
+├── mxu.exe                         # MXU GUI 客户端（.gitignore）
+├── maafw/                          # MaaFramework 运行库（.gitignore）
+├── config/                         # 运行时配置（.gitignore）
+├── debug/                          # 调试输出（.gitignore）
+└── requirements.txt                # Python 依赖（MaaFw）
+```
 
 ## 常用命令
 
-### 开发环境设置
+### 安装依赖
 ```bash
-# 安装依赖
-pip install -r requirements.txt
-
-# 安装开发依赖
-pip install -r requirements-dev.txt
-
-# 最小依赖（无GUI）
-pip install -r requirements-minimal.txt
+pip install -r requirements-maa.txt
 ```
 
-### 运行模式
-```bash
-# GUI模式（默认）
-python run.py
+### 运行
+通过 MXU 启动，MXU 读取 assets/interface.json 自动管理任务执行。
 
-# 测试ADB连接
-python run.py --mode test
+## Pipeline JSON 编写规范
 
-# 执行日常任务
-python run.py --mode daily
-
-# 征战推图
-python run.py --mode campaign --battles 10
-
-# 任务调度器
-python run.py --mode scheduler
-
-# 调试模式
-python run.py --debug
+### 节点结构
+```json
+{
+    "NodeName": {
+        "recognition": "TemplateMatch|OCR|DirectHit|Custom",
+        "template": ["image.png"],
+        "expected": ["文字"],
+        "action": "Click|DoNothing|StartApp|Custom|ClickKey|StopTask",
+        "target": true,
+        "timeout": 20000,
+        "next": ["NextNode1", "NextNode2"],
+        "on_error": ["ErrorHandler"],
+        "pre_delay": 0,
+        "post_delay": 0
+    }
+}
 ```
 
-### 测试和代码质量
-```bash
-# 运行所有测试
-pytest tests/
+### 识别类型
+- **DirectHit**: 无需识别，直接命中
+- **TemplateMatch**: 模板匹配（图片），threshold 默认 0.7
+- **OCR**: 文字识别，threshold 默认 0.3
+- **Custom**: 自定义识别器（Python Agent）
 
-# 运行单个测试文件
-pytest tests/unit/test_adb_service.py
+### 动作类型
+- **Click**: 点击（target: true 点击识别位置，或固定坐标 [x,y]）
+- **DoNothing**: 不执行操作
+- **StartApp**: 启动应用（需 package 参数）
+- **ClickKey**: 按键（key: 4 = Android 返回键）
+- **Custom**: 自定义动作（Python Agent）
+- **StopTask**: 停止当前任务
 
-# 代码格式化
-black src/ tests/
+### 坐标系
+- 基于 720p 分辨率（短边 720，即竖屏 720x1280）
+- ROI 格式: [x, y, w, h]
 
-# 代码检查
-flake8 src/
-mypy src/
-pylint src/
-```
+## 模板图片规范
 
-## 架构设计
+- 存储位置: `resource/image/`
+- 必须基于 720p 截图裁剪
+- 必须使用英文命名
+- 当前图片从 1080p 按 2/3 比例缩放而来
 
-### 核心模块分层
+## Python Agent
 
-1. **服务层 (src/services/)**
-   - `adb_service.py`: ADB设备管理、截图、点击、滑动等操作
-   - `config_service.py`: 配置文件管理（YAML格式）
-   - `log_service.py`: 日志系统
+### 自定义动作
+- `check_campaign_failure`: 征战连续失败计数，达到阈值返回 False 停止任务
+- `reset_campaign_failure`: 胜利时重置失败计数
 
-2. **控制器层 (src/controller/)**
-   - `base_controller.py`: 游戏控制器基类，定义通用接口
-   - `afk2_controller.py`: AFK2游戏特定控制逻辑
-   - `scene_detector.py`: 游戏场景识别
+### 自定义识别器
+- `detect_exit_dialog`: 检测退出确认弹窗
 
-3. **识别层 (src/recognition/)**
-   - `image_recognizer.py`: 模板匹配图像识别
-   - `ocr_engine.py`: PaddleOCR文字识别引擎
+## 关键配置
 
-4. **任务系统 (src/tasks/)**
-   - `task_manager.py`: 任务管理器，处理任务队列
-   - `task_executor.py`: 任务执行器
-   - `task_scheduler.py`: 定时任务调度
-   - `builtin_tasks.py`: 内置任务（日常、征战、收集奖励）
-   - `daily_idle_reward_task.py`: 挂机奖励任务
+- **游戏包名**: `com.lilithgame.igame.android.cn`
+- **控制器**: Android ADB，display_short_side: 720
+- **默认超时**: 20000ms
+- **模板匹配阈值**: 0.7
+- **OCR 阈值**: 0.3
 
-5. **GUI界面 (src/gui/)**
-   - `main_window.py`: 主窗口框架
-   - `tabs/`: 各功能页签（ADB配置、任务管理、实时监控、设置）
-   - `widgets/`: 自定义组件（日志、状态显示）
+## 任务列表
 
-### 关键设计模式
-
-- **单例模式**: ConfigService 确保全局配置一致性
-- **观察者模式**: 任务状态变更通知
-- **策略模式**: 不同OCR引擎切换（PaddleOCR/Tesseract）
-- **工厂模式**: 任务创建
-
-### ADB集成
-
-项目内置 Windows ADB 工具（adb/目录），自动处理设备连接：
-- USB连接：自动检测并连接
-- WiFi连接：支持无线调试
-- 设备状态管理：自动重连机制
-
-### 图像识别策略
-
-1. **模板匹配**: OpenCV模板匹配，用于识别固定UI元素
-2. **OCR识别**: PaddleOCR识别游戏内文字
-3. **场景检测**: 基于多个特征点判断当前游戏场景
-
-模板图像存储在 `src/resources/images/`：
-- `idle_mode.png`: 挂机界面
-- `collect_reward.png`: 奖励收集按钮
-- `current_progress.png`: 当前进度
-- `hourglass.png`: 沙漏图标
-
-## 配置管理
-
-配置文件优先级：
-1. `config.yaml` (用户配置)
-2. `config_default.yaml` (默认配置)
-
-主要配置项：
-- **adb**: ADB路径、设备ID、连接参数
-- **game**: 包名(com.lilithgame.igame.android.cn)、启动等待时间
-- **recognition**: 图像识别阈值、OCR语言
-- **ui**: 界面主题、窗口大小
-
-## 任务系统
-
-### 内置任务类型
-- **DailyTask**: 日常任务（签到、邮件、任务领取）
-- **CampaignTask**: 征战推图
-- **CollectRewardTask**: 收集挂机奖励
-- **DailyIdleRewardTask**: 定时收集挂机奖励
-
-### 任务状态流转
-```
-PENDING -> RUNNING -> COMPLETED/FAILED
-         -> CANCELLED (用户取消)
-         -> SCHEDULED (定时任务)
-```
+| 任务 | 入口节点 | 说明 |
+|------|----------|------|
+| WakeGame | StartWakeGame | 启动游戏并等待主界面 |
+| IdleReward | StartIdleReward | 收集挂机奖励（默认勾选） |
+| DailyTask | StartDailyTask | 一键领取日常任务 |
+| Campaign | StartCampaign | 征战推图（可配置战斗次数） |
+| CollectMail | StartCollectMail | 一键领取邮件 |
+| GuildCheckin | StartGuildCheckin | 公会签到 |
+| ShopFreeDraw | StartShopFreeDraw | 商店免费抽取 |
 
 ## 开发注意事项
 
-1. **Windows路径处理**: 使用 `pathlib.Path` 处理路径，自动处理反斜杠
-2. **ADB命令超时**: 默认30秒，可在配置中调整
-3. **图像识别阈值**: 默认0.8，过低可能误识别
-4. **游戏包名**: 国服为 `com.lilithgame.igame.android.cn`
-5. **错误重试**: 大部分操作支持自动重试（默认3次）
+1. Pipeline JSON 文件放在 `resource/pipeline/` 下，框架自动加载合并
+2. 节点名称全局唯一，跨文件引用
+3. `next` 列表按顺序尝试识别，第一个匹配的执行
+4. Custom action 返回 False 触发 `on_error` 处理
+5. 图片路径相对于 `resource/image/`
+6. 国际化字符串以 `$` 开头，从 lang JSON 中读取
 
-## 图像识别技巧
+## 依赖
 
-- 涉及到识别图片的时候需要对图片进行黑白滤镜处理，这样才能保证识别的准确率
-- 识别的图片都必须是英文命名，如果不是需要修改为英文
-
-## 测试策略
-
-- **单元测试**: 测试独立模块功能
-- **Mock ADB**: 测试使用 Mock 对象模拟 ADB 操作
-- **图像识别测试**: 使用预存的截图测试识别准确率
-
-## 依赖版本
-
-核心依赖：
-- PyQt6 >= 6.6.0 (GUI框架)
-- opencv-python >= 4.9.0 (图像处理)
-- paddlepaddle >= 2.5.0 + paddleocr >= 2.7.0 (OCR识别)
-- PyYAML >= 6.0.1 (配置文件)
-- schedule >= 1.2.0 (任务调度)
+- MaaFw >= 5.7.0

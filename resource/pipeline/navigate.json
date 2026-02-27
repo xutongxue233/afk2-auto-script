@@ -1,0 +1,63 @@
+{
+    "ReturnHome": {
+        "recognition": "DirectHit",
+        "action": "DoNothing",
+        "next": [
+            "ConfirmMainMenu",
+            "HandleExitGameDialog",
+            "HandleConfirmDialog",
+            "PressBackKey"
+        ]
+    },
+    "ConfirmMainMenu": {
+        "recognition": "OCR",
+        "expected": [
+            "神殿",
+            "远征冒险"
+        ],
+        "roi": [
+            0,
+            1400,
+            720,
+            200
+        ],
+        "timeout": 3000,
+        "action": "DoNothing",
+        "next": []
+    },
+    "HandleExitGameDialog": {
+        "recognition": "TemplateMatch",
+        "template": [
+            "cancel_button.png"
+        ],
+        "action": "Click",
+        "target": true,
+        "post_delay": 1000,
+        "next": [
+            "ReturnHome"
+        ]
+    },
+    "HandleConfirmDialog": {
+        "recognition": "OCR",
+        "expected": [
+            "确认",
+            "确定"
+        ],
+        "action": "Click",
+        "target": true,
+        "post_delay": 500,
+        "next": [
+            "ReturnHome"
+        ]
+    },
+    "PressBackKey": {
+        "recognition": "DirectHit",
+        "action": "ClickKey",
+        "key": 4,
+        "post_delay": 1000,
+        "next": [
+            "ConfirmMainMenu",
+            "HandleExitGameDialog"
+        ]
+    }
+}

@@ -1,0 +1,79 @@
+{
+    "StartIdleReward": {
+        "recognition": "OCR",
+        "expected": [
+            "托管"
+        ],
+        "roi": [
+            0,
+            1520,
+            200,
+            80
+        ],
+        "timeout": 10000,
+        "action": "DoNothing",
+        "on_error": [
+            "ReturnHome"
+        ],
+        "next": [
+            "OpenIdlePanel"
+        ]
+    },
+    "OpenIdlePanel": {
+        "recognition": "OCR",
+        "expected": [
+            "托管"
+        ],
+        "roi": [
+            0,
+            1520,
+            200,
+            80
+        ],
+        "action": "Click",
+        "target": true,
+        "post_delay": 2000,
+        "next": [
+            "FindCollectReward",
+            "CloseIdlePanel"
+        ]
+    },
+    "FindCollectReward": {
+        "recognition": "OCR",
+        "expected": [
+            "收获奖励",
+            "领取奖励",
+            "领取",
+            "收取"
+        ],
+        "timeout": 5000,
+        "action": "Click",
+        "target": true,
+        "post_delay": 1500,
+        "next": [
+            "CloseRewardPopup"
+        ]
+    },
+    "CloseRewardPopup": {
+        "recognition": "DirectHit",
+        "action": "Click",
+        "target": [
+            360,
+            800
+        ],
+        "pre_delay": 1500,
+        "post_delay": 1000,
+        "next": [
+            "ReturnHome"
+        ]
+    },
+    "CloseIdlePanel": {
+        "recognition": "DirectHit",
+        "action": "ClickKey",
+        "key": 4,
+        "post_delay": 500,
+        "next": [
+            "ReturnHome"
+        ]
+    }
+}

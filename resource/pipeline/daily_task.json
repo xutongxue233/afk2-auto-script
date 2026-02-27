@@ -1,0 +1,67 @@
+{
+    "StartDailyTask": {
+        "recognition": "OCR",
+        "timeout": 10000,
+        "action": "DoNothing",
+        "on_error": [
+            "ReturnHome"
+        ],
+        "next": [
+            "NavigateToTaskScreen"
+        ],
+        "expected": [
+            "神殿",
+            "远征冒险"
+        ],
+        "roi": [
+            0,
+            1400,
+            720,
+            200
+        ]
+    },
+    "NavigateToTaskScreen": {
+        "recognition": "OCR",
+        "expected": [
+            "任务"
+        ],
+        "roi": [
+            0,
+            600,
+            720,
+            120
+        ],
+        "action": "Click",
+        "target": true,
+        "post_delay": 2000,
+        "next": [
+            "ClickDailyTab"
+        ]
+    },
+    "ClickDailyTab": {
+        "recognition": "OCR",
+        "expected": [
+            "日常",
+            "每日"
+        ],
+        "action": "Click",
+        "target": true,
+        "post_delay": 1000,
+        "next": [
+            "ClickClaimAllDaily"
+        ]
+    },
+    "ClickClaimAllDaily": {
+        "recognition": "OCR",
+        "expected": [
+            "一键领取"
+        ],
+        "timeout": 5000,
+        "action": "Click",
+        "target": true,
+        "post_delay": 1000,
+        "next": [
+            "ReturnHome"
+        ]
+    }
+}

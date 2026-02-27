@@ -1,0 +1,101 @@
+{
+    "interface_version": 2,
+    "name": "afk2-auto-script",
+    "version": "2.0.0",
+    "title": "AFK2 自动化助手",
+    "description": "剑与远征：启程 自动化脚本",
+    "controller": [
+        {
+            "name": "Android",
+            "label": "安卓端",
+            "type": "Adb",
+            "display_short_side": 720
+        }
+    ],
+    "resource": [
+        {
+            "name": "Official",
+            "label": "官服资源",
+            "path": [
+                "./resource"
+            ]
+        }
+    ],
+    "task": [
+        {
+            "name": "WakeGame",
+            "label": "唤醒游戏",
+            "entry": "StartWakeGame",
+            "description": "启动游戏并等待进入主界面"
+        },
+        {
+            "name": "IdleReward",
+            "label": "收集挂机奖励",
+            "entry": "StartIdleReward",
+            "default_check": true,
+            "description": "收集挂机产生的资源奖励"
+        },
+        {
+            "name": "DailyTask",
+            "label": "日常任务",
+            "entry": "StartDailyTask",
+            "description": "一键领取日常任务奖励"
+        },
+        {
+            "name": "Campaign",
+            "label": "征战推图",
+            "entry": "StartCampaign",
+            "description": "自动进行征战关卡挑战",
+            "option": [
+                "battle_count"
+            ]
+        },
+        {
+            "name": "CollectMail",
+            "label": "邮件收取",
+            "entry": "StartCollectMail",
+            "description": "一键领取所有邮件附件"
+        },
+        {
+            "name": "GuildCheckin",
+            "label": "公会签到",
+            "entry": "StartGuildCheckin",
+            "description": "自动完成公会每日签到"
+        },
+        {
+            "name": "ShopFreeDraw",
+            "label": "商店免费抽取",
+            "entry": "StartShopFreeDraw",
+            "description": "领取商店中的免费抽取机会"
+        }
+    ],
+    "option": {
+        "battle_count": {
+            "type": "input",
+            "label": "战斗次数",
+            "inputs": [
+                {
+                    "name": "count",
+                    "label": "战斗次数",
+                    "description": "征战推图的战斗次数",
+                    "default": "10",
+                    "pipeline_type": "int",
+                    "verify": "^\\d+$",
+                    "pattern_msg": "请输入正整数"
+                }
+            ],
+            "pipeline_override": {
+                "CampaignBattleLoop": {
+                    "repeat": "{count}"
+                }
+            }
+        }
+    },
+    "agent": {
+        "child_exec": "./.venv/Scripts/python.exe",
+        "child_args": [
+            "./agent/main.py"
+        ],
+        "identifier": "afk2_agent"
+    }
+}
